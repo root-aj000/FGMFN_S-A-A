@@ -9,7 +9,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Load model
 model = FGMFN(embed_dim=256)
-model.load_state_dict(torch.load("fgmfn_sentiment.pth", map_location=device))
+model.load_state_dict(torch.load("saved_models/fgmfn_sentiment.pth", map_location=device))
 model.to(device)
 model.eval()
 

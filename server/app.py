@@ -4,7 +4,7 @@ from werkzeug.utils import secure_filename
 from PIL import Image
 import requests
 from io import BytesIO
-from predict import predict_ad_sentiment
+from predict.predict import predict_ad_sentiment
 
 UPLOAD_FOLDER = "uploads"
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
