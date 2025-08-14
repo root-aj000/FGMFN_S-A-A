@@ -144,11 +144,11 @@ python training/evaluate.py --config configs/default.yaml
 ``` 
 
 ### 5 Run backend server
+from root directory
 ```
 python -m server.app
 ```
-
-##### from root directory 
+ 
 
 ---
 ## CREATED AND MAINTAINED BY @root-aj000
