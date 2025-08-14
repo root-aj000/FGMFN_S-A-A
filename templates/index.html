@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Ad Sentiment Analysis</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-8">
+<div class="max-w-4xl mx-auto">
+    <h1 class="text-3xl font-bold mb-6 text-center">Ad Sentiment Analysis</h1>
+    
+    <form method="POST" enctype="multipart/form-data" class="mb-4">
+        <label class="font-semibold">Upload Images (multiple allowed):</label>
+        <input type="file" name="images" multiple class="mb-4">
+        <label class="font-semibold">Or Paste Image URLs (one per line):</label>
+        <textarea name="image_urls" rows="4" class="w-full mb-4 p-2 border rounded"></textarea>
+        <div class="flex space-x-4">
+            <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded">Analyze</button>
+            <form method="POST" action="/clear">
+                <button type="submit" class="bg-red-500 text-white px-4 py-2 rounded">Clear All</button>
+            </form>
+        </div>
+    </form>
+
+    {% if results %}
+    <h2 class="text-2xl font-semibold mb-4">Analysis Results</h2>
+    <div class="grid grid-cols-1 gap-4 mb-6">
+        {% for r in results %}
+        <div class="p-4 bg-white rounded shadow">
+            <h3 class="font-bold">{{ r.filename }}</h3>
+            <p>Sentiment: <span class="font-semibold">{{ r.sentiment }}</span></p>
+            <p>Confidence: {{ r.confidence | round(2) }}</p>
+            <p>Extracted Text: {{ r.text }}</p>
+        </div>
+        {% endfor %}
+    </div>
+
+    <h2 class="text-2xl font-semibold mb-4">Sentiment Distribution</h2>
+    <canvas id="sentimentChart" class="mb-6"></canvas>
+    <script>
+        const ctx = document.getElementById('sentimentChart').getContext('2d');
+        const sentimentCounts = {
+            'Positive': {{ results | selectattr("sentiment","equalto","Positive") | list | length }},
+            'Neutral': {{ results | selectattr("sentiment","equalto","Neutral") | list | length }},
+            'Negative': {{ results | selectattr("sentiment","equalto","Negative") | list | length }},
+        };
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: Object.keys(sentimentCounts),
+                datasets: [{
+                    label: 'Number of Ads',
+                    data: Object.values(sentimentCounts),
+                    backgroundColor: ['#10B981', '#FBBF24', '#EF4444']
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } }
+            }
+        });
+    </script>
+    {% endif %}
+</div>
+</body>
+</html>
