@@ -147,6 +147,6 @@ python training/evaluate.py --config configs/default.yaml
 ```
 python -m server.app
 ```
--from root directory 
+from root directory 
 ---
 ## CREATED AND MAINTAINED BY @root-aj000
