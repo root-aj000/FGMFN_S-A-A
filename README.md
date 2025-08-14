@@ -142,5 +142,10 @@ python training/train.py --config configs/default.yaml
 ``` 
 python training/evaluate.py --config configs/default.yaml
 ``` 
+
+### 5 Run backend server
+```
+uvicorn app:app --reload
+```
 ---
 ## CREATED AND MAINTAINED BY @root-aj000
