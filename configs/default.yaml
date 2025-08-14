@@ -1,0 +1,31 @@
+# Default configuration for FGMFN project
+
+dataset:
+  name: ytb_ads
+  train_path: data/ytb_ads/train.txt
+  val_path: data/ytb_ads/val.txt
+  test_path: data/ytb_ads/test.txt
+  image_size: 224
+  max_text_length: 64
+
+training:
+  epochs: 10
+  batch_size: 32
+  learning_rate: 0.0001
+  optimizer: adam
+  device: cuda
+
+model:
+  visual_backbone: resnet50
+  text_encoder: bert-base-uncased
+  embed_dim: 256
+  dropout: 0.1
+
+loss:
+  matching_weight: 1.0
+  mutual_info_weight: 1.0
+  classification_weight: 1.0
+
+output:
+  checkpoints_dir: checkpoints/
+  logs_dir: logs/
