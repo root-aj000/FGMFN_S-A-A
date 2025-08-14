@@ -17,9 +17,10 @@ Below is a description of each file and folder, along with example usage.
 - **twitter2017/** — Twitter dataset (2017)  
 
 **Example dataset format (`train.txt`):**
-
+```
 images/ad1.jpg	This product is amazing!	2 
 images/ad2.jpg	Not worth the money.	0
+```
 
 - First column: image path  
 - Second column: ad text  
@@ -107,7 +108,7 @@ model:
  * `README.md` — Documentation
 
  
-# How to Run the Project
+## How to Run the Project
 
 ### 1 Install dependencies
 ``` 
