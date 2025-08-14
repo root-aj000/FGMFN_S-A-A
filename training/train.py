@@ -67,6 +67,10 @@ def train(
 
         print(f"Epoch [{epoch+1}/{epochs}] - Loss: {avg_loss:.4f} - Acc: {avg_acc:.2f}%")
 
+    # Save model after training
+    torch.save(model.state_dict(), "fgmfn_sentiment.pth")
+    print("Model saved as fgmfn_sentiment.pth")
+
 
 if __name__ == "__main__":
     train(data_path="data/ytb_ads")
