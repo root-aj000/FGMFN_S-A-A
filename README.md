@@ -1,7 +1,7 @@
 
 # FGMFN: Fine-Grained Multiscale Cross-Modal Sentiment Analysis
 
-This project predicts sentiment in advertisements by analyzing both **images** and **text**.
+The project predicts sentiment in advertisements by analyzing both **images** and **text**.
 
 ---
 
@@ -9,7 +9,7 @@ This project predicts sentiment in advertisements by analyzing both **images** a
 
 Below is a description of each file and folder, along with example usage.
 
----
+
 
 ### 1. `data/` — Datasets
 - **ytb_ads/** — YouTube Ads dataset  
@@ -144,4 +144,3 @@ python training/evaluate.py --config configs/default.yaml
 ``` 
 ---
 ## CREATED AND MAINTAINED BY @root-aj000
----
