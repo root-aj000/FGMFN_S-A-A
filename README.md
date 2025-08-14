@@ -35,12 +35,12 @@ images/ad2.jpg	Not worth the money.	0
 from models.fg_mfn import FGMFN
 model = FGMFN(embed_dim=256)
 ``` 
-`visual_module.py` — Multi-scale image feature extractor
+#### `visual_module.py` — Multi-scale image feature extractor
 ``` 
 from models.visual_module import VisualFeatureExtractor
 visual_model = VisualFeatureExtractor()
 ``` 
-`text_module.py` — Text encoder with visual guidance
+ #### `text_module.py` — Text encoder with visual guidance
 ``` 
 from models.text_module import TextEncoder
 text_model = TextEncoder(model_name="bert-base-uncased") 
@@ -49,12 +49,12 @@ text_model = TextEncoder(model_name="bert-base-uncased")
 
 ### 3. `losses/` — Custom Loss Functions
 
-`matching_loss.py` — Matches image & text features if they belong together
+#### `matching_loss.py` — Matches image & text features if they belong together
 ``` 
 from losses.matching_loss import MatchingLoss
 loss_fn = MatchingLoss(margin=0.2)
 ``` 
-`mutual_info_loss.py` — Encourages information sharing between image & text
+#### `mutual_info_loss.py` — Encourages information sharing between image & text
 ``` 
 from losses.mutual_info_loss import MutualInfoLoss
 loss_fn = MutualInfoLoss()
@@ -64,28 +64,28 @@ loss_fn = MutualInfoLoss()
 
 ### 4.`training/` — Training & Evaluation
 
-`train.py` — Trains the FGMFN model
+#### `train.py` — Trains the FGMFN model
 ``` 
 python training/train.py --config configs/default.yaml
 ``` 
-`evaluate.py` — Tests the trained model
+#### `evaluate.py` — Tests the trained model
 ``` 
 python training/evaluate.py --config configs/default.yaml
 ```
 
 ### 5. `utils/` — Helper Functions
 
-`dataset.py` — Loads image + text dataset into PyTorch
+#### `dataset.py` — Loads image + text dataset into PyTorch
 ``` 
 from utils.dataset import AdvertisementDataset
 dataset = AdvertisementDataset("data/ytb_ads", split="train")
 ``` 
-`preprocessing.py` — Cleans and preprocesses text
+#### `preprocessing.py` — Cleans and preprocesses text
 ``` 
 from utils.preprocessing import clean_text
 print(clean_text("This Product!!! is Awesome..."))  # 'this product is awesome'
 ``` 
-`metrics.py` — Calculates evaluation metrics
+#### `metrics.py` — Calculates evaluation metrics
 ``` 
 from utils.metrics import compute_accuracy
 acc = compute_accuracy(pred_logits, true_labels)
@@ -93,7 +93,7 @@ acc = compute_accuracy(pred_logits, true_labels)
 
 ### 6. `configs/` — Project Configurations
 
-`default.yaml` — Controls dataset paths, training settings, and model parameters
+#### `default.yaml` — Controls dataset paths, training settings, and model parameters
 ``` 
 training:
   epochs: 10
@@ -105,7 +105,10 @@ model:
 ### 7. Root Files
  * `requirements.txt` — Python dependencies
  * `README.md` — Documentation
-🚀 How to Run the Project
+
+ 
+# How to Run the Project
+
 ### 1 Install dependencies
 ``` 
 pip install -r requirements.txt
