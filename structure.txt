@@ -15,3 +15,30 @@ utils/metrics.py
 configs/default.yaml
 requirements.txt
 README.md
+
+
+
+FGMFN_project/
+├── data/
+│   ├── ytb_ads/
+│   ├── twitter2015/
+│   └── twitter2017/
+├── models/
+│   ├── __init__.py
+│   ├── fg_mfn.py           # Core FGMFN model
+│   ├── visual_module.py    # Multi-scale visual feature extractor
+│   └── text_module.py      # Text encoder with visual guidance
+├── losses/
+│   ├── matching_loss.py
+│   └── mutual_info_loss.py
+├── training/
+│   ├── train.py
+│   └── evaluate.py
+├── utils/
+│   ├── dataset.py
+│   ├── preprocessing.py
+│   └── metrics.py
+├── configs/
+│   └── default.yaml
+├── requirements.txt
+└── README.md
