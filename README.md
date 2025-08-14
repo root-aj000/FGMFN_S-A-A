@@ -151,4 +151,4 @@ python -m server.app
  
 
 ---
-## CREATED AND MAINTAINED BY @root-aj000
+## CREATED && MAINTAINED BY @root-aj000
