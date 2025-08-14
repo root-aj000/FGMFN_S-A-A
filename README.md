@@ -145,7 +145,8 @@ python training/evaluate.py --config configs/default.yaml
 
 ### 5 Run backend server
 ```
-uvicorn app:app --reload
+python -m server.app
 ```
+-from root directory 
 ---
 ## CREATED AND MAINTAINED BY @root-aj000
