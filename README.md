@@ -20,11 +20,14 @@ Below is a description of each file and folder, along with example usage.
 ```
 images/ad1.jpg	This product is amazing!	2 
 images/ad2.jpg	Not worth the money.	0
+
 ```
 
 - First column: image path  
 - Second column: ad text  
 - Third column: sentiment label (0 = negative, 1 = neutral, 2 = positive)  
+
+
 
 ---
 
@@ -46,6 +49,9 @@ visual_model = VisualFeatureExtractor()
 from models.text_module import TextEncoder
 text_model = TextEncoder(model_name="bert-base-uncased") 
 ```
+
+
+
 ---
 
 ### 3. `losses/` — Custom Loss Functions
@@ -61,6 +67,8 @@ from losses.mutual_info_loss import MutualInfoLoss
 loss_fn = MutualInfoLoss()
 ```
 
+
+
 ---
 
 ### 4.`training/` — Training & Evaluation
@@ -74,6 +82,9 @@ python training/train.py --config configs/default.yaml
 python training/evaluate.py --config configs/default.yaml
 ```
 
+
+
+---
 ### 5. `utils/` — Helper Functions
 
 #### `dataset.py` — Loads image + text dataset into PyTorch
@@ -92,6 +103,9 @@ from utils.metrics import compute_accuracy
 acc = compute_accuracy(pred_logits, true_labels)
 ```
 
+
+
+---
 ### 6. `configs/` — Project Configurations
 
 #### `default.yaml` — Controls dataset paths, training settings, and model parameters
@@ -103,13 +117,15 @@ model:
   embed_dim: 256
 ```
 
+
+
+---
 ### 7. Root Files
  * `requirements.txt` — Python dependencies
  * `README.md` — Documentation
 
  
 ## How to Run the Project
-
 ### 1 Install dependencies
 ``` 
 pip install -r requirements.txt
@@ -118,13 +134,14 @@ pip install -r requirements.txt
 ``` 
 .venv/Scripts/Activate.ps1
 ``` 
-
 ### 3 Train the model
 ``` 
 python training/train.py --config configs/default.yaml
 ``` 
-
 ### 4 Evaluate the model
 ``` 
 python training/evaluate.py --config configs/default.yaml
 ``` 
+---
+## CREATED AND MAINTAINED BY @root-aj000
+---
