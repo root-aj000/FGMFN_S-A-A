@@ -1,5 +1,6 @@
 import os
 import torch
+import pandas as pd
 from torch.utils.data import Dataset
 from PIL import Image
 from torchvision import transforms
@@ -10,7 +11,7 @@ class AdvertisementDataset(Dataset):
     Custom dataset for advertisement sentiment analysis.
     Expects:
         data_path/
-            train.txt  (or val.txt / test.txt)  --> image_path \t text \t label
+            train.csv (or val.csv / test.csv) with columns: image_path,text,label
             images/
     """
 
@@ -26,25 +27,28 @@ class AdvertisementDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length = max_length
 
-        # Mapping for string labels to integers
+        # Label mapping
         self.label_map = {
             "Negative": 0,
             "Neutral": 1,
             "Positive": 2
         }
 
-        split_file = os.path.join(data_path, f"{split}.txt")
-        if not os.path.exists(split_file):
-            raise FileNotFoundError(f"Split file not found: {split_file}")
+        csv_file = os.path.join(data_path, f"{split}.csv")
+        if not os.path.exists(csv_file):
+            raise FileNotFoundError(f"CSV split file not found: {csv_file}")
 
-        with open(split_file, "r", encoding="utf-8") as f:
-            self.samples = [line.strip().split("\t") for line in f]
+        # Read CSV into dataframe
+        self.df = pd.read_csv(csv_file)
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.df)
 
     def __getitem__(self, idx):
-        img_path, text, label_val = self.samples[idx]
+        img_path = self.df.iloc[idx]["image_path"]
+        text = self.df.iloc[idx]["text"]
+        label_val = self.df.iloc[idx]["label"]
+
         img_full_path = os.path.join(self.data_path, img_path)
 
         # Load and preprocess image
@@ -66,10 +70,8 @@ class AdvertisementDataset(Dataset):
 
         # Convert label to integer
         try:
-            # If label is already numeric string
             label = int(label_val)
         except ValueError:
-            # If label is a string like "Positive"
             if label_val not in self.label_map:
                 raise ValueError(f"Label '{label_val}' not recognized in label_map.")
             label = self.label_map[label_val]
