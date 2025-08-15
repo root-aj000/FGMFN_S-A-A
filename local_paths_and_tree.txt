@@ -2,7 +2,10 @@
 README.md
 configs/default.yaml
 data/ytb_ads/a.py
-dataset/datascr.py
+data/ytb_ads/test.csv
+data/ytb_ads/train.csv
+data/ytb_ads/val.csv
+dataset_generator/gen_script.py
 local_paths_and_tree.txt
 losses/matching_loss.py
 losses/mutual_info_loss.py
@@ -32,10 +35,13 @@ Path Tree:
 │   └── default.yaml
 ├── data
 │   └── ytb_ads
-│       └── a.py
-├── dataset
-│   └── datascr.py
-├── local_paths_and_tree.txt
+│       ├── a.py
+│       ├── test.csv
+│       ├── train.csv
+│       └── val.csv
+├── dataset_generator
+│   └── gen_script.py
+├
 ├── losses
 │   ├── matching_loss.py
 │   └── mutual_info_loss.py
@@ -47,8 +53,8 @@ Path Tree:
 ├── predict
 │   ├── __init__.py
 │   └── predict.py
-├── python_scr.py
-├── python_script.py
+├
+├
 ├── requirements.txt
 ├── server
 │   ├── __init__.py
