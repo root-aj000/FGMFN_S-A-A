@@ -1,0 +1,65 @@
+.gitignore
+README.md
+configs/default.yaml
+data/ytb_ads/a.py
+dataset/datascr.py
+local_paths_and_tree.txt
+losses/matching_loss.py
+losses/mutual_info_loss.py
+models/__init__.py
+models/fg_mfn.py
+models/text_module.py
+models/visual_module.py
+predict/__init__.py
+predict/predict.py
+python_scr.py
+python_script.py
+requirements.txt
+server/__init__.py
+server/app.py
+structure.txt
+templates/index.html
+training/evaluate.py
+training/train.py
+utils/dataset.py
+utils/metrics.py
+utils/preprocessing.py
+
+Path Tree:
+├── .gitignore
+├── README.md
+├── configs
+│   └── default.yaml
+├── data
+│   └── ytb_ads
+│       └── a.py
+├── dataset
+│   └── datascr.py
+├── local_paths_and_tree.txt
+├── losses
+│   ├── matching_loss.py
+│   └── mutual_info_loss.py
+├── models
+│   ├── __init__.py
+│   ├── fg_mfn.py
+│   ├── text_module.py
+│   └── visual_module.py
+├── predict
+│   ├── __init__.py
+│   └── predict.py
+├── python_scr.py
+├── python_script.py
+├── requirements.txt
+├── server
+│   ├── __init__.py
+│   └── app.py
+├── structure.txt
+├── templates
+│   └── index.html
+├── training
+│   ├── evaluate.py
+│   └── train.py
+└── utils
+    ├── dataset.py
+    ├── metrics.py
+    └── preprocessing.py

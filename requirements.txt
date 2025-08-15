@@ -6,7 +6,7 @@ easyocr==1.7.1
 Pillow==9.5.0
 numpy==1.24.3
 pandas==2.0.3
-matplotlib==3.7.1
+matplotlib>=3.7.1
 flask==2.3.2
 flask-cors==3.0.10
 PyYAML==6.0
