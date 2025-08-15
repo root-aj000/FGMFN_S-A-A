@@ -1,71 +1,76 @@
 .gitignore
 README.md
 configs/default.yaml
-data/ytb_ads/a.py
-data/ytb_ads/test.csv
-data/ytb_ads/train.csv
-data/ytb_ads/val.csv
-dataset_generator/gen_script.py
+dataset_generator/prepare_data.py
+dataset_generator/preprocess.py
 local_paths_and_tree.txt
-losses/matching_loss.py
-losses/mutual_info_loss.py
-models/__init__.py
+models/configs/model_config.json
 models/fg_mfn.py
 models/text_module.py
 models/visual_module.py
-predict/__init__.py
-predict/predict.py
+preprocessing/augmentation.py
+preprocessing/dataset.py
+preprocessing/dataset_preprocessing.py
+preprocessing/image_preprocessing.py
+preprocessing/text_preprocessing.py
+preprocessing/tokenizer.py
+preprocessing/utils.py
 python_scr.py
 python_script.py
+read.md
 requirements.txt
-server/__init__.py
 server/app.py
+server/appp.py
+server/predict.py
+server/utils.py
 structure.txt
-templates/index.html
 training/evaluate.py
+training/logger.py
 training/train.py
-utils/dataset.py
-utils/metrics.py
-utils/preprocessing.py
+update/update.txt
+utils/path.py
+web/index.html
 
 Path Tree:
 ├── .gitignore
 ├── README.md
 ├── configs
 │   └── default.yaml
-├── data
-│   └── ytb_ads
-│       ├── a.py
-│       ├── test.csv
-│       ├── train.csv
-│       └── val.csv
 ├── dataset_generator
-│   └── gen_script.py
-├
-├── losses
-│   ├── matching_loss.py
-│   └── mutual_info_loss.py
+│   ├── prepare_data.py
+│   └── preprocess.py
+├── local_paths_and_tree.txt
 ├── models
-│   ├── __init__.py
+│   ├── configs
+│   │   └── model_config.json
 │   ├── fg_mfn.py
 │   ├── text_module.py
 │   └── visual_module.py
-├── predict
-│   ├── __init__.py
-│   └── predict.py
-├
-├
+├── preprocessing
+│   ├── augmentation.py
+│   ├── dataset.py
+│   ├── dataset_preprocessing.py
+│   ├── image_preprocessing.py
+│   ├── text_preprocessing.py
+│   ├── tokenizer.py
+│   └── utils.py
+├── python_scr.py
+├── python_script.py
+├── read.md
 ├── requirements.txt
 ├── server
-│   ├── __init__.py
-│   └── app.py
+│   ├── app.py
+│   ├── appp.py
+│   ├── predict.py
+│   └── utils.py
 ├── structure.txt
-├── templates
-│   └── index.html
 ├── training
 │   ├── evaluate.py
+│   ├── logger.py
 │   └── train.py
-└── utils
-    ├── dataset.py
-    ├── metrics.py
-    └── preprocessing.py
+├── update
+│   └── update.txt
+├── utils
+│   └── path.py
+└── web
+    └── index.html

@@ -6,7 +6,6 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from typing import List
 from PIL import Image
-import uuid
 
 from predict import predict, IMAGE_UPLOAD_DIR
 from utils.path import SAVED_MODEL_PATH, LOG_DIR
@@ -15,6 +14,7 @@ from utils.path import SAVED_MODEL_PATH, LOG_DIR
 MODEL_PATH = SAVED_MODEL_PATH
 UPLOAD_FOLDER = IMAGE_UPLOAD_DIR
 ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png"]
+LOG_DIR = LOG_DIR
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
@@ -28,45 +28,32 @@ logging.basicConfig(
 # ------------------ FASTAPI APP ------------------
 app = FastAPI(title="Multi-Modal Sentiment Classifier API")
 
-# ------------------ UTILITY ------------------
 def allowed_file(filename):
     return any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
 
-def save_upload_file(upload_file: UploadFile, dest_folder: str) -> str:
-    """Save uploaded file with a unique name and return its path."""
-    ext = os.path.splitext(upload_file.filename)[1].lower()
-    if ext not in [".jpg", ".jpeg", ".png"]:
-        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
-    unique_name = f"{uuid.uuid4().hex}{ext}"
-    file_path = os.path.join(dest_folder, unique_name)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(upload_file.file, buffer)
-    return file_path
-
 # ------------------ PREDICT ENDPOINT ------------------
 @app.post("/predict")
-async def predict_endpoint(files: List[UploadFile] = File(...)):
-    if not files:
-        raise HTTPException(status_code=400, detail="No files uploaded")
+async def predict_endpoint(files: List[UploadFile] = File(...), texts: List[str] = None):
+    if texts is None:
+        texts = ["" for _ in files]
+
+    if len(texts) != len(files):
+        raise HTTPException(status_code=400, detail="Number of texts must match number of images.")
 
     images = []
-    filenames = []
-
     try:
         # Save uploaded files temporarily
         for file in files:
-            file_path = save_upload_file(file, UPLOAD_FOLDER)
-            img = Image.open(file_path).convert("RGB")
+            if not allowed_file(file.filename):
+                raise HTTPException(status_code=400, detail=f"File type not allowed: {file.filename}")
+            temp_path = os.path.join(UPLOAD_FOLDER, file.filename)
+            with open(temp_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            img = Image.open(temp_path).convert("RGB")
             images.append(img)
-            filenames.append(os.path.basename(file_path))
 
-        # Run predictions (OCR + sentiment)
-        results = predict(images)
-
-        # Attach filenames to results
-        for i, res in enumerate(results):
-            res["filename"] = filenames[i]
-
+        # Run predictions
+        results = predict(images, texts)
         logging.info(f"Predictions made for {len(images)} images.")
         return JSONResponse(content={"predictions": results})
 

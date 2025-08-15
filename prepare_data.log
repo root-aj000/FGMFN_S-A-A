@@ -1,0 +1,29 @@
+2025-08-15 22:14:52,823 [INFO] Loading PaddleX OCR model...
+2025-08-15 22:14:52,840 [DEBUG] Starting new HTTPS connection (1): huggingface.co:443
+2025-08-15 22:14:53,443 [DEBUG] https://huggingface.co:443 "GET / HTTP/1.1" 200 None
+2025-08-15 22:14:53,492 [DEBUG] Starting new HTTPS connection (1): huggingface.co:443
+2025-08-15 22:14:53,941 [DEBUG] https://huggingface.co:443 "GET /api/models/PaddlePaddle/PP-LCNet_x1_0_doc_ori/revision/main HTTP/1.1" 200 1005
+2025-08-15 22:14:54,021 [DEBUG] Attempting to acquire lock 1845000281424 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\.gitattributes.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to acquire lock 1845000282640 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\config.json.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to acquire lock 1845000280912 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\README.md.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000281424 acquired on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\.gitattributes.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000282640 acquired on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\config.json.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to release lock 1845000281424 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\.gitattributes.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to release lock 1845000282640 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\config.json.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000280912 acquired on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\README.md.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to acquire lock 1845000277648 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.json.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to acquire lock 1845000278672 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.pdiparams.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000281424 released on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\.gitattributes.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000282640 released on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\config.json.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to acquire lock 1845000284368 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.yml.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000277648 acquired on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.json.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to release lock 1845000280912 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\README.md.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000278672 acquired on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.pdiparams.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to release lock 1845000277648 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.json.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000284368 acquired on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.yml.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to release lock 1845000278672 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.pdiparams.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000280912 released on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\README.md.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000277648 released on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.json.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000278672 released on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.pdiparams.lock
+2025-08-15 22:14:54,021 [DEBUG] Attempting to release lock 1845000284368 on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.yml.lock
+2025-08-15 22:14:54,021 [DEBUG] Lock 1845000284368 released on C:\Users\anish\.paddlex\official_models\PP-LCNet_x1_0_doc_ori\.cache\huggingface\download\inference.yml.lock

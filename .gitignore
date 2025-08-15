@@ -11,3 +11,4 @@ venv.bak/
 .qodo
 python_scr.py
 data/archive/
+data
