@@ -1,0 +1,434 @@
+
+---
+
+🔁 Regeneration Prompt: “FGMFN Ad Sentiment” (Full Spec)
+
+You are to generate a complete, runnable repository called FGMFN_project for fine-grained, multi-scale cross-modal (image+text) sentiment analysis in advertisements.
+
+0) Tech Stack & Constraints
+
+Python 3.10+, PyTorch, Transformers (BERT), Torchvision, pytesseract (for OCR dataset build).
+
+For inference in the web app, support either pytesseract or easyocr; default to pytesseract, but keep an interface so either backend works.
+
+Flask backend API; static HTML + TailwindCSS frontend (no build step).
+
+CSV (not TXT) for datasets.
+
+Reproducible: set all manual seeds and deterministic flags where practical.
+
+Save model weights to saved_models/fgmfn_sentiment.pth by default, but path must be configurable.
+
+
+1) Repository Layout (create all files)
+
+FGMFN_project/
+├── data/
+│   ├── images/                   # all images (renamed sequentially)
+│   ├── train.csv                 # columns: image_name,label_text,label_num,text
+│   ├── val.csv
+│   └── test.csv
+├── predict/
+│   ├── __init__.py
+│   └── predict.py                # single/batch inference; pluggable OCR
+├── scripts/
+│   ├── build_dataset.py          # creates data/ from a raw folder of ads
+│   └── utils_imagehash.py        # pHash/average-hash helpers for dedupe
+├── server/
+│   ├── __init__.py
+│   ├── app.py                    # Flask API: /predict (file/url/multi)
+│   └── storage/                  # temp uploads & url downloads
+├── models/
+│   ├── __init__.py
+│   ├── fg_mfn.py                 # FGMFN model (visual+text encoders, fusion)
+│   ├── visual_module.py          # multi-scale visual feature extractor (ResNet/ViT backbone)
+│   └── text_module.py            # BERT text encoder (attention mask support)
+├── losses/
+│   ├── matching_loss.py
+│   └── mutual_info_loss.py
+├── training/
+│   ├── train.py                  # trains, evaluates, saves state_dict
+│   └── evaluate.py               # standalone eval on val/test
+├── utils/
+│   ├── dataset.py                # CSV loader, tokenization, transforms
+│   ├── preprocessing.py          # text cleaning, OCR adapters, dedupe helpers
+│   └── metrics.py                # accuracy, macro-F1, confusion matrix
+├── web/
+│   ├── index.html                # Tailwind UI; upload multiple files or URLs
+│   └── tailwind.css              # minimal (or use CDN)
+├── configs/
+│   └── default.yaml
+├── saved_models/                 # created at runtime if missing
+├── requirements.txt
+└── README.md
+
+2) Dataset Format (CSV) — Canonical Schema
+
+Folder: data/
+
+Images: in data/images/ (no per-split folders)
+
+CSVs: train.csv, val.csv, test.csv
+
+Columns (all required):
+
+image_name → e.g., 0001.jpg
+
+label_text → one of: "Negative" | "Neutral" | "Positive" (we often use only "Neutral"/"Positive" for bootstrapped datasets)
+
+label_num → integer mapping; default: {"Negative": 0, "Neutral": 1, "Positive": 2}
+
+If your dataset has only 2 classes, use: {"Neutral": 0, "Positive": 1} and set num_classes=2 in config.
+
+
+text → OCR-extracted (can be empty string)
+
+
+
+> Training code must not depend on TXT files. It must read these CSVs only.
+
+
+
+3) Data Creation Script (scripts/build_dataset.py)
+
+Input: a folder of ad images (mixed names, formats).
+
+Output: data/images/ with renamed sequential files 0001.jpg, 0002.jpg, …
+
+CSVs: train.csv, val.csv, test.csv with the schema above.
+
+OCR: use pytesseract by default (configurable path on Windows). Provide an interface that could switch to easyocr if installed.
+
+Preprocessing Rules:
+
+1. Image normalization: convert to RGB, optionally skip images smaller than a configurable min size (e.g., 64×64).
+
+
+2. OCR extraction: pytesseract.image_to_string(), strip whitespace. If OCR fails, store "".
+
+
+3. Text cleaning (via utils/preprocessing.py): lowercasing, collapse whitespace, strip URLs, strip emojis/punctuation (configurable), normalize Unicode.
+
+
+4. Deduplication:
+
+Image dedupe: compute perceptual hash (pHash) via imagehash (in scripts/utils_imagehash.py). Maintain a set; if a new image’s hash distance ≤ threshold (e.g., 5), treat as duplicate and skip (or keep first).
+
+Text dedupe: compare cleaned text. If identical text already exists with an identical or very similar image hash, skip duplicates.
+
+
+
+5. Null handling:
+
+If text == "", keep row but mark text_empty=True in memory and still write CSV. (Training can decide to use text dropout or reduced weight.)
+
+
+
+6. Labeling:
+
+For quick bootstraps, randomly assign only Neutral/Positive; mapping {"Neutral": 1, "Positive": 2} (or 0/1 if 2-class).
+
+Keep config flags to enable 3-class if you later curate negatives.
+
+
+
+7. Splits: stratified train/val/test with ratios from config. Fix random_state.
+
+
+
+Write robust logging: total input images, kept after dedupe, per-split counts, number of empty-text rows.
+
+
+4) Data Loader (utils/dataset.py)
+
+Reads data/{split}.csv (pandas).
+
+Loads data/images/{image_name}.
+
+Applies torchvision transforms (Resize 224, ToTensor, Normalize ImageNet means/stdevs).
+
+Tokenizes text using BertTokenizer (configurable name). If text is empty, still create attention mask correctly.
+
+Returns dict: {"visual": image_tensor, "text": input_ids, "mask": attention_mask, "label": label_tensor}
+
+Parameter use_numeric_labels (default True); otherwise map from label_text.
+
+Works for both 2-class and 3-class, honoring configs/default.yaml.
+
+
+5) Text Preprocessing (utils/preprocessing.py)
+
+Include functions:
+
+clean_text(s: str, *, lowercase=True, strip_urls=True, strip_punct=True, strip_emoji=True, collapse_ws=True) -> str
+
+normalize_unicode(s: str) -> str
+
+Optional: simple language detection or stopword trimming (config flag).
+
+dedupe_text_key(s: str) -> str (canonicalized string used for dedupe set).
+
+OCR adapters:
+
+ocr_with_tesseract(image: PIL.Image) -> str
+
+ocr_with_easyocr(reader, image_path: str) -> str
+
+Select which backend with a config flag.
+
+
+
+6) Model (models/)
+
+visual_module.py: backbone (default: ResNet50) + multi-scale features (e.g., concat features from 3 layers or use FPN-like pooling). Project to embed_dim.
+
+text_module.py: BERT encoder → pooled output (CLS) → project to embed_dim. Accept input_ids, attention_mask.
+
+fg_mfn.py:
+
+Take visual and text embeddings → fine-grained multi-scale fusion (e.g., cross-attention or gated fusion over scales).
+
+Output:
+
+visual_embeds, text_embeds (for losses)
+
+logits for classification with num_classes from config.
+
+
+
+
+7) Losses (losses/)
+
+matching_loss.py: contrastive / InfoNCE style to align image–text pairs.
+
+mutual_info_loss.py: MINE-style or Jensen-Shannon mutual information estimator (lightweight variant).
+
+Total loss = ce_loss + alpha * match_loss + beta * mi_loss (weights in config).
+
+
+8) Training (training/train.py)
+
+CLI or --config configs/default.yaml.
+
+Load tokenizer, datasets (train/val), dataloaders.
+
+Instantiate FGMFN(embed_dim, num_classes) with config.
+
+If CSV has only Neutral/Positive, set num_classes=2 and remap labels to {Neutral:0, Positive:1} during dataset init (flag).
+
+
+Optimizer (Adam/AdamW), LR scheduler (optional), grad clipping.
+
+Metrics: running loss, accuracy, macro-F1; early stopping on val macro-F1 (patience configurable).
+
+After training:
+
+Save best model state_dict to saved_models/fgmfn_sentiment.pth (or config path).
+
+Print: Model saved as <path>.
+
+
+
+9) Evaluation (training/evaluate.py)
+
+Load saved weights, run on val/test split, report accuracy, macro-F1, confusion matrix.
+
+Optionally export a predictions.csv with columns: image_name,text,true_label,pred_label,confidence.
+
+
+10) Inference (predict/predict.py)
+
+Load FGMFN + weights (path from config or argument).
+
+Two entry points:
+
+1. predict_ad_sentiment(image_path: str) -> (sentiment_text, confidence, extracted_text)
+
+
+2. predict_from_csv(csv_path: str, images_root: str) -> pandas.DataFrame
+
+
+
+OCR backend switch:
+
+Default: pytesseract (no GPU needed).
+
+Optional: easyocr (Reader(['en'])). Keep consistent preprocessing with training.
+
+
+Map logits → softmax → label id → {"Negative":0,"Neutral":1,"Positive":2} or the 2-class map if configured.
+
+
+11) Web App
+
+Backend (server/app.py)
+
+Flask endpoints:
+
+POST /api/predict/files → accepts multiple file uploads. Run OCR + predict for each. Returns JSON with per-image sentiment, confidence, extracted text.
+
+POST /api/predict/urls → accepts multiple image URLs. Download to server/storage/, dedupe by image hash to avoid reprocessing, then predict.
+
+GET /api/health → simple health check.
+
+
+Configurable model path and OCR backend via env vars or configs/default.yaml.
+
+CORS enabled for local web/ folder.
+
+
+Frontend (web/index.html)
+
+Tailwind UI:
+
+Drag-and-drop area for multi-file upload (accept multiple images, multiple interactions).
+
+Text area for multiple image URLs (comma/line separated).
+
+Results grid: thumbnail, extracted text (collapsible), predicted sentiment (badge), confidence (progress bar).
+
+Summary panel: counts per class, simple bar chart (no external chart lib required; basic canvas is fine).
+
+
+Call /api/predict/files and /api/predict/urls and render results; handle incremental batches.
+
+
+12) Config (configs/default.yaml)
+
+Example keys:
+
+data:
+  root: "data"
+  train_csv: "train.csv"
+  val_csv: "val.csv"
+  test_csv: "test.csv"
+  images_dir: "images"
+  use_numeric_labels: true
+  num_classes: 2   # 2 if only Neutral/Positive; 3 if you add Negative later
+
+training:
+  epochs: 10
+  batch_size: 32
+  lr: 1e-4
+  weight_decay: 0.01
+  num_workers: 4
+  seed: 42
+  grad_clip: 1.0
+  early_stopping_patience: 3
+  alpha_match: 0.2
+  beta_mi: 0.1
+
+model:
+  embed_dim: 256
+  visual_backbone: "resnet50"
+  text_model_name: "bert-base-uncased"
+
+ocr:
+  backend: "tesseract"   # or "easyocr"
+  tesseract_cmd: ""       # set path on Windows if needed
+
+paths:
+  save_dir: "saved_models"
+  save_name: "fgmfn_sentiment.pth"
+
+13) Requirements (requirements.txt)
+
+Pin versions (CPU-friendly by default; user can swap torch index):
+
+torch==2.2.2
+torchvision==0.17.2
+transformers==4.41.2
+tokenizers==0.15.2
+pillow==10.3.0
+pandas==2.2.2
+scikit-learn==1.5.0
+tqdm==4.66.4
+pytesseract==0.3.10
+easyocr==1.7.1
+python-bidi==0.4.2
+opencv-python==4.9.0.80
+matplotlib==3.8.4
+imagehash==4.3.1
+flask==3.0.2
+flask-cors==4.0.0
+pyyaml==6.0.1
+
+14) Handling Duplicates, Nulls, Bad Rows (must implement)
+
+Duplicates:
+
+Images: use imagehash.phash(image); maintain set; if Hamming distance ≤ threshold, skip duplicates (keep first). Log skip.
+
+Text: after cleaning, if exact match seen with a near-duplicate image, skip.
+
+
+Null/Empty text:
+
+Keep rows, but make sure the tokenizer handles empty strings (attention mask becomes zeros where appropriate).
+
+Optionally down-weight CE loss for empty-text samples (config flag; can skip initially).
+
+
+Missing files: when loading, if images/{image_name} doesn’t exist, skip row with warning.
+
+CSV validation: assert required columns exist before training; print helpful error.
+
+
+15) Saving & Loading Models
+
+Training saves: os.path.join(paths.save_dir, paths.save_name) from config. Create folder if missing.
+
+Inference loads from that path by default; predict.py accepts override parameters.
+
+
+16) CLI Examples
+
+Build dataset:
+
+python scripts/build_dataset.py --input "C:/Users/Aj/Documents/ad_images" --output "data" --img-ext ".jpg"
+
+Train (2-class):
+
+python training/train.py --config configs/default.yaml
+
+(ensure data.num_classes=2)
+
+Evaluate:
+
+python training/evaluate.py --config configs/default.yaml --split test
+
+Serve API:
+
+python server/app.py --config configs/default.yaml
+
+Frontend: open web/index.html in a browser (uses the API).
+
+
+17) Code Quality & Comments
+
+Every module/file must include:
+
+a top-level docstring explaining purpose and I/O
+
+type hints for functions
+
+graceful error messages
+
+small self-tests or usage snippets in if __name__ == "__main__": where appropriate
+
+
+
+18) Regeneration Instructions (very important)
+
+Generate code file-by-file in the exact structure above.
+
+For each file, output the full contents with proper imports and minimal runnable defaults.
+
+Ensure inter-file imports use package paths (no sys.path.append) thanks to __init__.py files.
+
+After all files, include a short “Getting Started” section: how to create dataset, train, and run the web app.
+
+
+
+---
+
