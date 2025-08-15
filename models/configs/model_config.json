@@ -1,0 +1,8 @@
+{
+  "IMAGE_BACKBONE": "resnet50",
+  "TEXT_ENCODER": "bert-base-uncased",
+  "FUSION_TYPE": "concat",
+  "NUM_CLASSES": 2,
+  "DROPOUT": 0.3,
+  "HIDDEN_DIM": 512
+}

@@ -1,84 +1,72 @@
-from flask import Flask, render_template, request, redirect, url_for, session
+# server/app.py
 import os
-from werkzeug.utils import secure_filename
+import shutil
+import logging
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import JSONResponse
+from typing import List
 from PIL import Image
-import requests
-from io import BytesIO
-from predict.predict import predict_ad_sentiment
 
-UPLOAD_FOLDER = "uploads"
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
+from predict import predict, IMAGE_UPLOAD_DIR
+from utils.path import SAVED_MODEL_PATH, LOG_DIR
 
-app = Flask(__name__)
-app.secret_key = "supersecretkey"  # required for session
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# ------------------ CONFIG ------------------
+MODEL_PATH = SAVED_MODEL_PATH
+UPLOAD_FOLDER = IMAGE_UPLOAD_DIR
+ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png"]
+LOG_DIR = LOG_DIR
+os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# ------------------ LOGGING ------------------
+logging.basicConfig(
+    filename=os.path.join(LOG_DIR, "server.log"),
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# ------------------ FASTAPI APP ------------------
+app = FastAPI(title="Multi-Modal Sentiment Classifier API")
+
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
 
-def save_uploaded_file(file):
-    filename = secure_filename(file.filename)
-    path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    file.save(path)
-    return path, filename
+# ------------------ PREDICT ENDPOINT ------------------
+@app.post("/predict")
+async def predict_endpoint(files: List[UploadFile] = File(...), texts: List[str] = None):
+    if texts is None:
+        texts = ["" for _ in files]
 
-def save_url_image(url):
+    if len(texts) != len(files):
+        raise HTTPException(status_code=400, detail="Number of texts must match number of images.")
+
+    images = []
     try:
-        response = requests.get(url)
-        img = Image.open(BytesIO(response.content)).convert("RGB")
-        filename = url.split("/")[-1].split("?")[0] or "temp.jpg"
-        path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        img.save(path)
-        return path, filename
-    except:
-        return None, None
-
-@app.route("/", methods=["GET", "POST"])
-def index():
-    if "results" not in session:
-        session["results"] = []
-
-    results = session["results"]
-
-    if request.method == "POST":
-        # Handle uploaded files
-        files = request.files.getlist("images")
+        # Save uploaded files temporarily
         for file in files:
-            if file and allowed_file(file.filename):
-                path, filename = save_uploaded_file(file)
-                sentiment, confidence, text = predict_ad_sentiment(path)
-                results.append({
-                    "filename": filename,
-                    "sentiment": sentiment,
-                    "confidence": confidence,
-                    "text": text
-                })
+            if not allowed_file(file.filename):
+                raise HTTPException(status_code=400, detail=f"File type not allowed: {file.filename}")
+            temp_path = os.path.join(UPLOAD_FOLDER, file.filename)
+            with open(temp_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            img = Image.open(temp_path).convert("RGB")
+            images.append(img)
 
-        # Handle URLs
-        urls = request.form.get("image_urls", "").splitlines()
-        for url in urls:
-            url = url.strip()
-            if url:
-                path, filename = save_url_image(url)
-                if path:
-                    sentiment, confidence, text = predict_ad_sentiment(path)
-                    results.append({
-                        "filename": filename,
-                        "sentiment": sentiment,
-                        "confidence": confidence,
-                        "text": text
-                    })
+        # Run predictions
+        results = predict(images, texts)
+        logging.info(f"Predictions made for {len(images)} images.")
+        return JSONResponse(content={"predictions": results})
 
-        session["results"] = results  # save back to session
-        return redirect(url_for("index"))
+    except Exception as e:
+        logging.error(f"Error during prediction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
-    return render_template("index.html", results=results)
+    finally:
+        # Clean up uploaded images
+        for img_file in os.listdir(UPLOAD_FOLDER):
+            os.remove(os.path.join(UPLOAD_FOLDER, img_file))
 
-@app.route("/clear", methods=["POST"])
-def clear():
-    session["results"] = []
-    return redirect(url_for("index"))
-
-if __name__ == "__main__":
-    app.run(debug=True)
+# ------------------ HEALTH CHECK ------------------
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "message": "API is running"}

@@ -1,141 +1,47 @@
-from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, Any
-
+# models/fg_mfn.py
+import json
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from models.visual_module import VisualModule
+from models.text_module import TextModule
+from utils.path import MODEL_CONFIG
 
-from .visual_module import VisualMultiScale
-from .text_module import TextGuidedEncoder
+# Load config
+MODEL_CONFIG = MODEL_CONFIG
+with open(MODEL_CONFIG, "r") as f:
+    cfg = json.load(f)
 
-
-@dataclass
-class FGMFNConfig:
-    # Visual
-    vis_backbone: str = "resnet50"
-    vis_pretrained: bool = True
-    vis_embed_dim: int = 512
-    vis_scales: tuple = (1, 2, 3)
-
-    # Text
-    text_model_name: str = "bert-base-uncased"
-    text_visual_guidance: bool = True
-    text_num_attn_layers: int = 1
-    text_num_heads: int = 8
-    text_dropout: float = 0.1
-    text_freeze_encoder: bool = False
-
-    # Fusion / classifier
-    num_classes: int = 3
-    dropout: float = 0.1
-
-
-class ProjectionHead(nn.Module):
-    """
-    Projects embeddings to a shared space for matching / MI losses.
-    """
-    def __init__(self, in_dim: int, out_dim: int = 256):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.LayerNorm(in_dim),
-            nn.Linear(in_dim, out_dim),
+class FG_MFN(nn.Module):
+    def __init__(self, cfg):
+        super(FG_MFN, self).__init__()
+        self.visual_module = VisualModule(backbone=cfg["IMAGE_BACKBONE"], out_features=cfg["HIDDEN_DIM"])
+        self.text_module = TextModule(encoder_name=cfg["TEXT_ENCODER"], out_features=cfg["HIDDEN_DIM"])
+        self.fusion_type = cfg.get("FUSION_TYPE", "concat")
+        
+        fusion_dim = cfg["HIDDEN_DIM"] * 2 if self.fusion_type == "concat" else cfg["HIDDEN_DIM"]
+        self.classifier = nn.Sequential(
+            nn.Linear(fusion_dim, cfg["HIDDEN_DIM"]),
+            nn.ReLU(),
+            nn.Dropout(cfg["DROPOUT"]),
+            nn.Linear(cfg["HIDDEN_DIM"], cfg["NUM_CLASSES"])
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.normalize(self.net(x), dim=-1)
+    def forward(self, image_tensor, text_tensor, attention_mask=None):
+        visual_feat = self.visual_module(image_tensor)       # [batch, HIDDEN_DIM]
+        text_feat = self.text_module(text_tensor, attention_mask)  # [batch, HIDDEN_DIM]
 
+        if self.fusion_type == "concat":
+            fused = torch.cat([visual_feat, text_feat], dim=1)
+        else:
+            fused = visual_feat + text_feat  # simple addition as example
 
-class FGMFN(nn.Module):
-    """
-    Fine-Grained Multiscale Cross-Modal Sentiment Model.
+        logits = self.classifier(fused)
+        return logits  # [batch, NUM_CLASSES]
 
-    Outputs:
-      - logits: [B, C]
-      - vis_proj: [B, P]    (projected visual embedding for matching/MI)
-      - txt_proj: [B, P]    (projected text embedding for matching/MI)
-      - aux: dict with intermediate tensors
-    """
-    def __init__(self, cfg: Optional[FGMFNConfig] = None):
-        super().__init__()
-        cfg = cfg or FGMFNConfig()
-
-        # Visual encoder
-        self.visual = VisualMultiScale(
-            backbone=cfg.vis_backbone,
-            pretrained=cfg.vis_pretrained,
-            embed_dim=cfg.vis_embed_dim,
-            scales=list(cfg.vis_scales),
-            add_positional_encoding=True,
-        )
-
-        # Text encoder with visual guidance
-        self.text = TextGuidedEncoder(
-            model_name=cfg.text_model_name,
-            visual_guidance=cfg.text_visual_guidance,
-            num_attn_layers=cfg.text_num_attn_layers,
-            num_heads=cfg.text_num_heads,
-            dropout=cfg.text_dropout,
-            freeze_text_encoder=cfg.text_freeze_encoder,
-        )
-
-        hidden_size = self.text.hidden_size
-
-        # Align visual global to text hidden size (if needed)
-        self.vis_to_hidden = nn.Sequential(
-            nn.Linear(cfg.vis_embed_dim, hidden_size),
-            nn.LayerNorm(hidden_size),
-        )
-
-        # Classification head on guided text representation
-        self.cls = nn.Sequential(
-            nn.Dropout(cfg.dropout),
-            nn.Linear(hidden_size, cfg.num_classes),
-        )
-
-        # Projection heads for contrastive / matching / MI objectives
-        proj_dim = 256
-        self.txt_proj = ProjectionHead(hidden_size, proj_dim)
-        self.vis_proj = ProjectionHead(hidden_size, proj_dim)
-
-    def forward(
-        self,
-        images: torch.Tensor,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
-        """
-        Args:
-            images: [B, 3, H, W]
-            input_ids: [B, L]
-            attention_mask: [B, L]
-        Returns:
-            logits, vis_p, txt_p, aux
-        """
-        # Visual path
-        vis_tokens, vis_global_raw = self.visual(images)           # [B,T,Dv], [B,Dv]
-        vis_global = self.vis_to_hidden(vis_global_raw)            # [B, Dh]
-
-        # Text path with visual guidance
-        txt_seq, txt_pooled, txt_guided = self.text(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            vis_tokens=vis_tokens,           # keys/values for cross-attn
-            vis_global=vis_global,           # global vector for gated fusion
-        )
-
-        # Classifier on guided representation
-        logits = self.cls(txt_guided)                                # [B, C]
-
-        # Projections for auxiliary losses
-        txt_p = self.txt_proj(txt_guided)                            # [B, P]
-        vis_p = self.vis_proj(vis_global)                            # [B, P]
-
-        aux = {
-            "txt_seq": txt_seq,                     # [B, L, Dh]
-            "txt_pooled": txt_pooled,               # [B, Dh]
-            "txt_guided": txt_guided,               # [B, Dh]
-            "vis_tokens": vis_tokens,               # [B, T, Dv]
-            "vis_global_raw": vis_global_raw,       # [B, Dv]
-            "vis_global": vis_global,               # [B, Dh]
-        }
-        return logits, vis_p, txt_p, aux
+# Example usage
+if __name__ == "__main__":
+    model = FG_MFN(cfg)
+    img = torch.randn(2, 3, 224, 224)          # dummy image batch
+    text = torch.randint(0, 1000, (2, 128))    # dummy token ids
+    logits = model(img, text)
+    print("Logits shape:", logits.shape)

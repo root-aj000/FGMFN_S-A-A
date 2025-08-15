@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Multi-Modal Sentiment Classifier</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center py-10">
+
+  <h1 class="text-3xl font-bold mb-6">Multi-Modal Sentiment Classifier</h1>
+
+  <!-- File Upload Form -->
+  <form id="uploadForm" class="bg-white p-6 rounded shadow-md w-full max-w-xl">
+    <input type="file" id="imageFiles" multiple accept="image/*" class="mb-4" />
+    <textarea id="texts" placeholder="Optional: Enter OCR text for each image, comma-separated" 
+              class="w-full p-2 border border-gray-300 rounded mb-4"></textarea>
+    <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+      Predict
+    </button>
+  </form>
+
+  <!-- Results Container -->
+  <div id="results" class="mt-6 w-full max-w-xl grid grid-cols-1 gap-4"></div>
+
+  <script>
+    const API_URL = "http://localhost:8000/predict";
+
+    document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const files = document.getElementById("imageFiles").files;
+      const textInput = document.getElementById("texts").value;
+      const texts = textInput ? textInput.split(",") : Array(files.length).fill("");
+
+      if (files.length === 0) {
+        alert("Please select at least one image.");
+        return;
+      }
+      if (texts.length !== files.length) {
+        alert("Number of OCR text entries must match number of images.");
+        return;
+      }
+
+      const formData = new FormData();
+      for (let i = 0; i < files.length; i++) {
+        formData.append("files", files[i]);
+        formData.append("texts", texts[i]);
+      }
+
+      const resultsDiv = document.getElementById("results");
+      resultsDiv.innerHTML = "<p class='text-gray-500'>Predicting...</p>";
+
+      try {
+        const res = await fetch(API_URL, { method: "POST", body: formData });
+        const data = await res.json();
+        resultsDiv.innerHTML = "";
+
+        data.predictions.forEach((pred, idx) => {
+          const file = files[idx];
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const imgSrc = e.target.result;
+            const card = document.createElement("div");
+            card.className = "bg-white p-4 rounded shadow flex items-center gap-4";
+
+            card.innerHTML = `
+              <img src="${imgSrc}" class="w-24 h-24 object-cover rounded" />
+              <div>
+                <p><strong>OCR Text:</strong> ${texts[idx]}</p>
+                <p><strong>Sentiment:</strong> ${pred.predicted_label_text} (${(pred.confidence_score*100).toFixed(1)}%)</p>
+              </div>
+            `;
+            resultsDiv.appendChild(card);
+          };
+          reader.readAsDataURL(file);
+        });
+
+      } catch (err) {
+        console.error(err);
+        resultsDiv.innerHTML = "<p class='text-red-500'>Error during prediction. Check console.</p>";
+      }
+    });
+  </script>
+
+</body>
+</html>

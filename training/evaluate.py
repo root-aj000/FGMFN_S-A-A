@@ -1,44 +1,77 @@
+# training/evaluate.py
+import os
 import torch
-from torch.utils.data import DataLoader
+import numpy as np
+import pandas as pd
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
 
-from models.fg_mfn import FGMFN
-from utils.dataset import AdvertisementDataset
-from utils.metrics import compute_accuracy
+from preprocessing.dataset import CustomDataset
+from models.fg_mfn import FG_MFN
+import json
+from utils.path import TEST_CSV, SAVED_MODEL_PATH, MODEL_CONFIG, LOG_DIR
 
+# ------------------ PATHS ------------------
+TEST_CSV = TEST_CSV 
+MODEL_PATH = SAVED_MODEL_PATH 
+MODEL_CONFIG = MODEL_CONFIG 
+EVAL_LOG_DIR = LOG_DIR 
 
-def evaluate(
-    checkpoint_path: str,
-    data_path: str,
-    batch_size: int = 32,
-    device: str = "cuda" if torch.cuda.is_available() else "cpu",
-):
-    # Dataset & loader
-    val_dataset = AdvertisementDataset(data_path, split="val")
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+os.makedirs(EVAL_LOG_DIR, exist_ok=True)
 
-    # Load model
-    model = FGMFN().to(device)
-    model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-    model.eval()
+# ------------------ HYPERPARAMS ------------------
+BATCH_SIZE = 32
+MAX_TEXT_LEN = 128
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-    total_acc = 0
-    with torch.no_grad():
-        for batch in val_loader:
-            visuals, texts, labels = (
-                batch["visual"].to(device),
-                batch["text"].to(device),
-                batch["label"].to(device),
-            )
+# ------------------ LOAD CONFIG ------------------
+with open(MODEL_CONFIG, "r") as f:
+    cfg = json.load(f)
 
-            _, _, logits = model(visuals, texts)
-            total_acc += compute_accuracy(logits, labels)
+# ------------------ LOAD DATASET ------------------
+test_dataset = CustomDataset(TEST_CSV, max_len=MAX_TEXT_LEN)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
-    avg_acc = total_acc / len(val_loader)
-    print(f"Validation Accuracy: {avg_acc:.2f}%")
+# ------------------ LOAD MODEL ------------------
+model = FG_MFN(cfg).to(DEVICE)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+model.eval()
 
+# ------------------ EVALUATION LOOP ------------------
+all_preds, all_labels = [], []
 
-if __name__ == "__main__":
-    evaluate(
-        checkpoint_path="checkpoints/fgmfn_best.pth",
-        data_path="data/ytb_ads"
-    )
+with torch.no_grad():
+    for batch in test_loader:
+        images = batch["visual"].to(DEVICE)
+        texts = batch["text"].to(DEVICE)
+        labels = batch["label"].to(DEVICE)
+
+        outputs = model(images, texts)
+        preds = torch.argmax(outputs, dim=1).cpu().numpy()
+        all_preds.extend(preds)
+        all_labels.extend(labels.cpu().numpy())
+
+# ------------------ METRICS ------------------
+accuracy = accuracy_score(all_labels, all_preds)
+f1 = f1_score(all_labels, all_preds, average='macro')
+cm = confusion_matrix(all_labels, all_preds)
+
+print(f"Test Accuracy: {accuracy:.4f}")
+print(f"Test Macro F1 Score: {f1:.4f}")
+print(f"Confusion Matrix:\n{cm}")
+
+# ------------------ SAVE EVALUATION REPORT ------------------
+report_path = os.path.join(EVAL_LOG_DIR, "evaluation_report.csv")
+report_df = pd.DataFrame({
+    "metric": ["accuracy", "macro_f1"],
+    "value": [accuracy, f1]
+})
+report_df.to_csv(report_path, index=False)
+
+# ------------------ PLOT CONFUSION MATRIX ------------------
+cm_fig, ax = plt.subplots(figsize=(6,6))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Neutral", "Positive"])
+disp.plot(cmap=plt.cm.Blues, ax=ax)
+plt.title("Confusion Matrix")
+plt.savefig(os.path.join(EVAL_LOG_DIR, "confusion_matrix.png"))
+plt.close()

@@ -1,91 +1,149 @@
+# 01_data_generation.py
 import os
-import random
+import cv2
 import pandas as pd
-from PIL import Image
+from glob import glob
 from tqdm import tqdm
-from sklearn.model_selection import train_test_split
-import pytesseract  # OCR
+from .preprocess import deduplicate, save_csv, log_error
+from utils.path import RAW_DATA_DIR, PROCESSED_DATA_DIR, IMAGE_OUTPUT_DIR, LOG_DIR
 
-# ======== CONFIG ========
-INPUT_FOLDER = r"C:\Users\Aj\Documents\ad_images"         # Input ads folder
-OUTPUT_FOLDER = r"C:\Users\Aj\Documents\ad_dataset"       # Output dataset folder
-IMG_EXT = ".jpg"                                          # ".jpg" or ".png"
-TRAIN_SPLIT = 0.7
-VAL_SPLIT = 0.15
-LABELS_TEXT = ["Neutral", "Positive"]  # No Negative
-LABELS_NUM = {"Neutral": 1, "Positive": 2}
-# Optional: Point to Tesseract executable (Windows)
-# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# Optional PaddleOCR import
+try:
+    from paddleocr import PaddleOCR
+    paddle_available = True
+except ImportError:
+    paddle_available = False
+
+import pytesseract
+
+# ========================
+# Config & Paths
+# ========================
+RAW_DATA_DIR = RAW_DATA_DIR
+PROCESSED_DATA_DIR = PROCESSED_DATA_DIR
+IMAGE_OUTPUT_DIR = IMAGE_OUTPUT_DIR
+LOG_DIR = LOG_DIR
+
+image_extensions = [".jpg", ".png"]
+labels_map = {"Neutral": 0, "Positive": 1, "Negative": 2}
+
+# Choose OCR engine: "tesseract" or "paddle"
+OCR_ENGINE = "paddle"  # Change to "tesseract" if preferred
+
+# Initialize PaddleOCR if selected
+if OCR_ENGINE == "paddle" and paddle_available:
+    ocr_model = PaddleOCR(use_angle_cls=True, lang='en')
+elif OCR_ENGINE == "paddle" and not paddle_available:
+    raise ImportError("PaddleOCR selected but not installed.")
+
+# Ensure directories exist
+os.makedirs(PROCESSED_DATA_DIR, exist_ok=True)
+os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+
+# ========================
+# Helper Functions
 # ========================
 
-def extract_text_from_image(img_path):
-    """Extract text from image using Tesseract OCR."""
+def get_all_images(raw_dir):
+    """Get all image file paths recursively."""
+    images = []
+    for ext in image_extensions:
+        images.extend(glob(os.path.join(raw_dir, f"**/*{ext}"), recursive=True))
+    return images
+
+def extract_text(image_path):
+    """Extract text from image using the chosen OCR engine."""
     try:
-        img = Image.open(img_path).convert("RGB")
-        text = pytesseract.image_to_string(img)
+        img = cv2.imread(image_path)
+        if img is None:
+            raise ValueError("Unreadable image")
+
+        if OCR_ENGINE == "tesseract":
+            text = pytesseract.image_to_string(img)
+        elif OCR_ENGINE == "paddle":
+            result = ocr_model.ocr(image_path, cls=True)
+            text = " ".join([line[1][0] for page in result for line in page])
+        else:
+            raise ValueError(f"Unknown OCR engine: {OCR_ENGINE}")
+
         return text.strip()
     except Exception as e:
-        print(f"⚠ OCR failed for {img_path}: {e}")
-        return ""
+        log_error(f"Failed OCR on {image_path}: {str(e)}")
+        return None
 
-def prepare_dataset(input_folder, output_folder):
-    os.makedirs(output_folder, exist_ok=True)
-    images_out_folder = os.path.join(output_folder, "images")
-    os.makedirs(images_out_folder, exist_ok=True)
+def assign_label(text):
+    """Simple placeholder for labeling logic."""
+    if not text:
+        return "Neutral"
+    # Expand with actual sentiment logic if needed
+    return "Positive" if len(text) > 20 else "Neutral"
 
-    # Gather all image files
-    image_files = [f for f in os.listdir(input_folder) if f.lower().endswith((".jpg", ".png", ".jpeg"))]
-    if not image_files:
-        print("⚠ No images found in input folder.")
-        return
+def rename_and_save_image(src_path, idx):
+    """Rename image to a consistent format and copy to IMAGE_OUTPUT_DIR."""
+    ext = os.path.splitext(src_path)[1]
+    new_name = f"{idx:04d}{ext}"
+    dst_path = os.path.join(IMAGE_OUTPUT_DIR, new_name)
+    try:
+        img = cv2.imread(src_path)
+        if img is None:
+            raise ValueError("Unreadable image")
+        cv2.imwrite(dst_path, img)
+        return new_name
+    except Exception as e:
+        log_error(f"Failed to save image {src_path}: {str(e)}")
+        return None
 
-    image_files.sort()
-    data_rows = []
+# ========================
+# Main Data Generation
+# ========================
 
-    print("📦 Processing images with OCR...")
-    counter = 1
-    for img_name in tqdm(image_files, desc="Processing"):
-        img_path = os.path.join(input_folder, img_name)
-        new_name = f"{counter:04d}{IMG_EXT}"
-        new_path = os.path.join(images_out_folder, new_name)
+def main():
+    images = get_all_images(RAW_DATA_DIR)
+    print(f"Found {len(images)} images.")
 
-        # Save image to dataset folder
-        img = Image.open(img_path).convert("RGB")
-        img.save(new_path)
+    data = []
+    idx = 1
+    for img_path in tqdm(images, desc="Processing images"):
+        text = extract_text(img_path)
+        if text is None:
+            continue
+        label_text = assign_label(text)
+        label_num = labels_map[label_text]
 
-        # Random label assignment
-        label_text = random.choice(LABELS_TEXT)
-        label_num = LABELS_NUM[label_text]
+        new_image_name = rename_and_save_image(img_path, idx)
+        if new_image_name is None:
+            continue
 
-        # OCR extraction
-        text_from_img = extract_text_from_image(img_path)
-
-        data_rows.append({
-            "image_path": f"images/{new_name}",
-            "text": text_from_img,
+        data.append({
+            "image_name": new_image_name,
+            "text": text,
             "label_text": label_text,
             "label_num": label_num
         })
-        counter += 1
+        idx += 1
 
-    if not data_rows:
-        print("✅ No new images to process.")
-        return
+    print(f"Collected {len(data)} valid samples.")
 
-    df = pd.DataFrame(data_rows)
+    # Deduplicate
+    cleaned_data = deduplicate(data)
+    print(f"{len(cleaned_data)} samples after deduplication.")
 
-    # Split into train, val, test
-    train_df, temp_df = train_test_split(df, train_size=TRAIN_SPLIT, shuffle=True, random_state=42)
-    val_df, test_df = train_test_split(temp_df, train_size=VAL_SPLIT / (1 - TRAIN_SPLIT), random_state=42)
+    # Split into train/val/test (80/10/10)
+    df = pd.DataFrame(cleaned_data)
+    df = df.sample(frac=1, random_state=42).reset_index(drop=True)  # Shuffle
 
-    # Save CSV files
-    train_df.to_csv(os.path.join(output_folder, "train.csv"), index=False)
-    val_df.to_csv(os.path.join(output_folder, "val.csv"), index=False)
-    test_df.to_csv(os.path.join(output_folder, "test.csv"), index=False)
+    n = len(df)
+    train_df = df[:int(0.8*n)]
+    val_df = df[int(0.8*n):int(0.9*n)]
+    test_df = df[int(0.9*n):]
 
-    print("\n✅ Dataset prepared successfully!")
-    print(f"📂 Saved in: {output_folder}")
-    print(f"📄 CSV Columns: {df.columns.tolist()}")
+    save_csv(train_df, os.path.join(PROCESSED_DATA_DIR, "train.csv"))
+    save_csv(val_df, os.path.join(PROCESSED_DATA_DIR, "val.csv"))
+    save_csv(test_df, os.path.join(PROCESSED_DATA_DIR, "test.csv"))
+
+    print("CSV files saved to", PROCESSED_DATA_DIR)
 
 if __name__ == "__main__":
-    prepare_dataset(INPUT_FOLDER, OUTPUT_FOLDER)
+    main()
