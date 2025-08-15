@@ -1,15 +1,20 @@
+import os
 import torch
 from models.fg_mfn import FGMFN
 from PIL import Image
 import torchvision.transforms as transforms
 import easyocr
 from transformers import BertTokenizer
+import pandas as pd
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Load model
 model = FGMFN(embed_dim=256)
-model.load_state_dict(torch.load("saved_models/fgmfn_sentiment.pth", map_location=device))
+model.load_state_dict(torch.load(
+    os.path.join("saved_models", "fgmfn_sentiment.pth"),
+    map_location=device
+))
 model.to(device)
 model.eval()
 
@@ -20,9 +25,11 @@ tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 reader = easyocr.Reader(['en'])
 
 def extract_text_from_image(image_path):
+    """Extract text from an image using EasyOCR."""
     return " ".join(reader.readtext(image_path, detail=0))
 
 def preprocess_image(image_path):
+    """Preprocess image for model input."""
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -33,10 +40,12 @@ def preprocess_image(image_path):
     return transform(image).unsqueeze(0)
 
 def preprocess_text(text):
+    """Tokenize text for BERT."""
     encoding = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=128)
     return encoding["input_ids"], encoding["attention_mask"]
 
 def predict_ad_sentiment(image_path):
+    """Predict sentiment for a single ad image."""
     text = extract_text_from_image(image_path)
     img_tensor = preprocess_image(image_path).to(device)
     input_ids, attention_mask = preprocess_text(text)
@@ -51,8 +60,32 @@ def predict_ad_sentiment(image_path):
     sentiment_map = {0: "Negative", 1: "Neutral", 2: "Positive"}
     return sentiment_map[pred_label], confidence, text
 
-# Example usage
+def predict_from_csv(csv_path, images_root):
+    """
+    Run predictions for all images listed in a CSV file.
+    CSV must have a column 'image_path' with relative paths.
+    """
+    df = pd.read_csv(csv_path)
+    results = []
+
+    for _, row in df.iterrows():
+        image_path = os.path.join(images_root, row["image_path"])
+        sentiment, confidence, text = predict_ad_sentiment(image_path)
+        results.append({
+            "image_path": row["image_path"],
+            "extracted_text": text,
+            "predicted_sentiment": sentiment,
+            "confidence": confidence
+        })
+
+    return pd.DataFrame(results)
+
 if __name__ == "__main__":
-    sentiment, confidence, extracted_text = predict_ad_sentiment("sample_ad.jpg")
+    # Example: single image
+    sentiment, confidence, extracted_text = predict_ad_sentiment("data/images/sample_ad.jpg")
     print(f"Sentiment: {sentiment} (Confidence: {confidence:.2f})")
     print(f"Extracted Text: {extracted_text}")
+
+    # Example: batch prediction from CSV
+    results_df = predict_from_csv("data/test.csv", "data")
+    print(results_df.head())
