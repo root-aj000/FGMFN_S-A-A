@@ -1,21 +1,19 @@
 import os
 import torch
-import pandas as pd
 from torch.utils.data import Dataset
 from PIL import Image
 from torchvision import transforms
-
+import pandas as pd
 
 class AdvertisementDataset(Dataset):
-    """
-    Custom dataset for advertisement sentiment analysis.
-    Expects:
+    def __init__(self, data_path, split="train", transform=None, tokenizer=None, max_length=64, use_numeric_labels=True):
+        """
         data_path/
-            train.csv (or val.csv / test.csv) with columns: image_path,text,label
             images/
-    """
-
-    def __init__(self, data_path, split="train", transform=None, tokenizer=None, max_length=64):
+            train.csv
+            val.csv
+            test.csv
+        """
         self.data_path = data_path
         self.split = split
         self.transform = transform or transforms.Compose([
@@ -26,36 +24,32 @@ class AdvertisementDataset(Dataset):
         ])
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.use_numeric_labels = use_numeric_labels
 
-        # Label mapping
-        self.label_map = {
-            "Negative": 0,
-            "Neutral": 1,
-            "Positive": 2
-        }
-
+        # Load CSV instead of TXT
         csv_file = os.path.join(data_path, f"{split}.csv")
-        if not os.path.exists(csv_file):
-            raise FileNotFoundError(f"CSV split file not found: {csv_file}")
+        df = pd.read_csv(csv_file)
 
-        # Read CSV into dataframe
-        self.df = pd.read_csv(csv_file)
+        # Store data
+        self.image_names = df["image_name"].tolist()
+        self.texts = df["text"].fillna("").tolist()
+        if use_numeric_labels:
+            self.labels = df["label_num"].tolist()
+        else:
+            self.labels = df["label_text"].tolist()
 
     def __len__(self):
-        return len(self.df)
+        return len(self.image_names)
 
     def __getitem__(self, idx):
-        img_path = self.df.iloc[idx]["image_path"]
-        text = self.df.iloc[idx]["text"]
-        label_val = self.df.iloc[idx]["label"]
+        img_path = os.path.join(self.data_path, "images", self.image_names[idx])
 
-        img_full_path = os.path.join(self.data_path, img_path)
-
-        # Load and preprocess image
-        image = Image.open(img_full_path).convert("RGB")
+        # Load image
+        image = Image.open(img_path).convert("RGB")
         image = self.transform(image)
 
         # Tokenize text
+        text = self.texts[idx]
         if self.tokenizer:
             text_tokens = self.tokenizer(
                 text,
@@ -68,16 +62,8 @@ class AdvertisementDataset(Dataset):
         else:
             text_tensor = torch.tensor([ord(c) for c in text[:self.max_length]], dtype=torch.long)
 
-        # Convert label to integer
-        try:
-            label = int(label_val)
-        except ValueError:
-            if label_val not in self.label_map:
-                raise ValueError(f"Label '{label_val}' not recognized in label_map.")
-            label = self.label_map[label_val]
+        label = self.labels[idx]
+        if self.use_numeric_labels:
+            label = torch.tensor(int(label), dtype=torch.long)
 
-        return {
-            "visual": image,
-            "text": text_tensor,
-            "label": torch.tensor(label, dtype=torch.long)
-        }
+        return {"visual": image, "text": text_tensor, "label": label}
