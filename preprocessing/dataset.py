@@ -4,6 +4,7 @@ import cv2
 import torch
 from torch.utils.data import Dataset
 import pandas as pd
+import numpy as np
 from image_preprocessing import resize_image, normalize_image
 from text_preprocessing import clean_text, tokenize_text
 from augmentation import augment_image
