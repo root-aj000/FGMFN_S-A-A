@@ -1,77 +1,188 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Multi-modal Sentiment Prediction</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multi-Modal Sentiment Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-100 min-h-screen flex flex-col items-center py-10">
+<body class="bg-[#edf2f4] text-[#27293c]">
 
-    <h1 class="text-3xl font-bold mb-6">Sentiment Analysis (Image + OCR)</h1>
+<header class="bg-[#2b2d42] text-[#edf2f4] p-4 shadow-md">
+    <h1 class="text-2xl font-bold">Multi-Modal Sentiment Dashboard</h1>
+    <p class="text-sm">Upload images to see OCR + Sentiment Analysis</p>
+</header>
 
-    <form id="upload-form" class="bg-white p-6 rounded shadow-md w-full max-w-xl">
-        <input type="file" id="file-input" multiple accept="image/*" class="mb-4">
-        <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded">
-            Predict Sentiment
-        </button>
-    </form>
+<main class="max-w-7xl mx-auto p-6">
 
-    <div id="results" class="mt-6 w-full max-w-xl space-y-4"></div>
+    <!-- Upload Section -->
+    <section class="mb-6 bg-[#f7fafa] p-6 rounded shadow">
+        <h2 class="text-xl font-semibold mb-4">Upload Images</h2>
+        <input type="file" id="fileInput" multiple class="mb-4" accept=".jpg,.jpeg,.png">
+        <button id="uploadBtn" class="bg-[#696e9d] hover:bg-[#9b9ebe] text-[#edf2f4] px-4 py-2 rounded">Predict</button>
+        <p id="status" class="mt-2 text-[#27293c]"></p>
+    </section>
 
-    <script>
-        const form = document.getElementById("upload-form");
-        const fileInput = document.getElementById("file-input");
-        const resultsDiv = document.getElementById("results");
+    <!-- Charts Section -->
+    <section id="chartsSection" class="hidden mb-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="bg-[#f7fafa] p-4 rounded shadow">
+            <h2 class="text-lg font-semibold mb-2">Sentiment Distribution</h2>
+            <canvas id="sentimentChart"></canvas>
+        </div>
+        <div class="bg-[#f7fafa] p-4 rounded shadow">
+            <h2 class="text-lg font-semibold mb-2">Confidence per Image (%)</h2>
+            <canvas id="accuracyChart"></canvas>
+        </div>
+    </section>
 
-        form.addEventListener("submit", async (e) => {
-            e.preventDefault();
+    <!-- Table Section -->
+    <section id="tableSection" class="hidden bg-[#f7fafa] p-6 rounded shadow">
+        <h2 class="text-xl font-semibold mb-4">Prediction Results</h2>
+        <div class="overflow-x-auto">
+            <table class="w-full table-auto border-collapse">
+                <thead>
+                    <tr class="bg-[#d2d6df]">
+                        <th class="px-4 py-2 text-left">Preview</th>
+                        <th class="px-4 py-2 text-left">Filename</th>
+                        <th class="px-4 py-2 text-left">Label</th>
+                        <th class="px-4 py-2 text-left">Confidence</th>
+                        <th class="px-4 py-2 text-left">OCR Text</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+    </section>
 
-            const files = fileInput.files;
-            if (!files.length) return alert("Please select at least one image.");
+</main>
 
-            const formData = new FormData();
-            for (const file of files) {
-                formData.append("files", file);
-            }
+<script>
+const fileInput = document.getElementById("fileInput");
+const uploadBtn = document.getElementById("uploadBtn");
+const status = document.getElementById("status");
+const tableBody = document.getElementById("tableBody");
+const chartsSection = document.getElementById("chartsSection");
+const tableSection = document.getElementById("tableSection");
 
-            resultsDiv.innerHTML = `<p class="text-gray-500">Processing...</p>`;
+let sentimentChart, accuracyChart;
 
-            try {
-                const res = await fetch("http://localhost:8000/predict", {
-                    method: "POST",
-                    body: formData
-                });
+// Distinct color palette for bars (different for each image)
+const distinctColors = [
+    '#27293c','#2b2d42','#696e9d','#9b9ebe','#8d99ae','#d90429','#ef233c','#a30000','#4a4d72','#ced0df'
+];
 
-                const predictions = await res.json();
-                resultsDiv.innerHTML = "";
+const sentimentColors = {
+    Positive: '#4a4d72',
+    Neutral: '#8d99ae',
+    Negative: '#d90429'
+};
 
-                predictions.forEach(pred => {
-                    const card = document.createElement("div");
-                    card.className = "bg-white p-4 rounded shadow flex gap-4 items-center";
+uploadBtn.addEventListener("click", async () => {
+    const files = fileInput.files;
+    if (!files.length) {
+        alert("Please select files to upload");
+        return;
+    }
 
-                    const img = document.createElement("img");
-                    img.src = URL.createObjectURL(files.find(f => f.name === pred.filename));
-                    img.className = "w-24 h-24 object-cover rounded";
+    status.textContent = "Uploading...";
+    const formData = new FormData();
+    for (let file of files) formData.append("files", file);
 
-                    const info = document.createElement("div");
-                    info.innerHTML = `
-                        <p><strong>Filename:</strong> ${pred.filename}</p>
-                        <p><strong>OCR Text:</strong> ${pred.ocr_text || "N/A"}</p>
-                        <p><strong>Predicted Sentiment:</strong> ${pred.predicted_label_text}</p>
-                        <p><strong>Confidence:</strong> ${(pred.confidence_score*100).toFixed(2)}%</p>
-                    `;
+    // Convert files to base64 for preview
+    const filePreviews = await Promise.all([...files].map(file => new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.readAsDataURL(file);
+    })));
 
-                    card.appendChild(img);
-                    card.appendChild(info);
-                    resultsDiv.appendChild(card);
-                });
+    try {
+        const response = await fetch("http://127.0.0.1:8000/predict", {
+            method: "POST",
+            body: formData
+        });
+        if (!response.ok) throw new Error("Upload failed");
+        const data = await response.json();
+        status.textContent = "Prediction complete!";
 
-            } catch (err) {
-                console.error(err);
-                resultsDiv.innerHTML = `<p class="text-red-500">Error occurred while processing images.</p>`;
+        chartsSection.classList.remove("hidden");
+        tableSection.classList.remove("hidden");
+
+        tableBody.innerHTML = "";
+        let positive = 0, neutral = 0, negative = 0;
+
+        const imageLabels = [];
+        const imageConfidences = [];
+        const imageColors = [];
+
+        data.predictions.forEach((pred, idx) => {
+            const row = document.createElement("tr");
+
+            const imgPreview = document.createElement("img");
+            imgPreview.src = filePreviews[idx];
+            imgPreview.alt = pred.filename;
+            imgPreview.className = "h-16 w-16 object-cover rounded";
+
+            row.innerHTML = `
+                <td class="px-4 py-2 text-sm"></td>
+                <td class="px-4 py-2 text-sm">${pred.filename}</td>
+                <td class="px-4 py-2 text-sm">${pred.predicted_label_text}</td>
+                <td class="px-4 py-2 text-sm">${(pred.confidence_score*100).toFixed(2)}%</td>
+                <td class="px-4 py-2 text-sm">${pred.ocr_text}</td>
+            `;
+            row.cells[0].appendChild(imgPreview);
+            tableBody.appendChild(row);
+
+            imageLabels.push(pred.filename);
+            imageConfidences.push((pred.confidence_score*100).toFixed(2));
+            imageColors.push(distinctColors[idx % distinctColors.length]);
+
+            if(pred.predicted_label_text === "Positive") positive++;
+            else if(pred.predicted_label_text === "Neutral") neutral++;
+            else negative++;
+        });
+
+        // Sentiment Pie Chart
+        const ctx1 = document.getElementById('sentimentChart').getContext('2d');
+        if(sentimentChart) sentimentChart.destroy();
+        sentimentChart = new Chart(ctx1, {
+            type: 'pie',
+            data: {
+                labels: ['Positive', 'Neutral', 'Negative'],
+                datasets: [{
+                    data: [positive, neutral, negative],
+                    backgroundColor: [sentimentColors.Positive, sentimentColors.Neutral, sentimentColors.Negative]
+                }]
+            },
+            options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+        });
+
+        // Confidence Bar Chart per Image
+        const ctx2 = document.getElementById('accuracyChart').getContext('2d');
+        if(accuracyChart) accuracyChart.destroy();
+        accuracyChart = new Chart(ctx2, {
+            type: 'bar',
+            data: {
+                labels: imageLabels,
+                datasets: [{
+                    label: 'Confidence (%)',
+                    data: imageConfidences,
+                    backgroundColor: imageColors
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: { y: { beginAtZero: true, max: 100 } }
             }
         });
-    </script>
+
+    } catch (err) {
+        console.error(err);
+        status.textContent = "Error during prediction. Check console.";
+    }
+});
+</script>
+
 </body>
 </html>
+<!-- python -m http.server 5500 -->

@@ -12,3 +12,4 @@ venv.bak/
 python_scr.py
 data/archive/
 data
+models/saved_models

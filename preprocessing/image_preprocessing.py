@@ -2,7 +2,7 @@
 import cv2
 import numpy as np
 import torch
-from augmentation import augment_image
+from preprocessing.augmentation import augment_image
 
 # Config
 IMAGE_SIZE = (224, 224)

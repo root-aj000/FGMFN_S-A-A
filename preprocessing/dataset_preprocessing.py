@@ -3,9 +3,9 @@ import os
 import cv2
 import torch
 import pandas as pd
-from image_preprocessing import resize_image, normalize_image
-from text_preprocessing import clean_text, tokenize_text
-from augmentation import augment_image
+from preprocessing.image_preprocessing import resize_image, normalize_image
+from preprocessing.text_preprocessing import clean_text, tokenize_text
+from preprocessing.augmentation import augment_image
 from utils.path import PROCESSED_IMAGE_DIR, TRAIN_CSV, VAL_CSV, TEST_CSV
 
 

@@ -20,7 +20,7 @@ EVAL_LOG_DIR = LOG_DIR
 os.makedirs(EVAL_LOG_DIR, exist_ok=True)
 
 # ------------------ HYPERPARAMS ------------------
-BATCH_SIZE = 32
+BATCH_SIZE = 1  # 32 increase when add data
 MAX_TEXT_LEN = 128
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -29,14 +29,23 @@ with open(MODEL_CONFIG, "r") as f:
     cfg = json.load(f)
 
 # ------------------ LOAD DATASET ------------------
-test_dataset = CustomDataset(TEST_CSV, max_len=MAX_TEXT_LEN)
-test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+test_dataset = CustomDataset(TEST_CSV)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)  #4 increase when add data
 
 # ------------------ LOAD MODEL ------------------
 model = FG_MFN(cfg).to(DEVICE)
 model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
 model.eval()
 
+
+
+
+
+print("Device:", DEVICE)
+print("Number of test samples:", len(test_dataset))
+sample = next(iter(test_loader))
+print("Batch keys:", sample.keys())
+print("Sample shapes:", {k: v.shape for k, v in sample.items()})
 # ------------------ EVALUATION LOOP ------------------
 all_preds, all_labels = [], []
 
@@ -69,6 +78,14 @@ report_df = pd.DataFrame({
 report_df.to_csv(report_path, index=False)
 
 # ------------------ PLOT CONFUSION MATRIX ------------------
+# cm_fig, ax = plt.subplots(figsize=(6,6))
+# disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Neutral", "Positive"])
+# disp.plot(cmap=plt.cm.Blues, ax=ax)
+# plt.title("Confusion Matrix")
+# plt.savefig(os.path.join(EVAL_LOG_DIR, "confusion_matrix.png"))
+# plt.close()
+
+cm = confusion_matrix(all_labels, all_preds, labels=[0, 1])
 cm_fig, ax = plt.subplots(figsize=(6,6))
 disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Neutral", "Positive"])
 disp.plot(cmap=plt.cm.Blues, ax=ax)

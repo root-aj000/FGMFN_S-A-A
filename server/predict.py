@@ -5,13 +5,21 @@ import numpy as np
 from PIL import Image
 from torchvision import transforms
 import json
+from paddlex import create_pipeline
+import traceback
 
 from preprocessing.dataset import CustomDataset
 from models.fg_mfn import FG_MFN
-from utils.path import SAVED_MODEL_PATH , MODEL_CONFIG
+from preprocessing.text_preprocessing import tokenize_text
+from utils.path import SAVED_MODEL_PATH, MODEL_CONFIG
 
-# Optional: Tesseract OCR
-import pytesseract
+# Optional: Tesseract OCR fallback (if needed)
+# import pytesseract
+# pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# ------------------ OCR MODEL ------------------
+# Assuming ocr_model is defined globally somewhere in your project
+ocr_model = create_pipeline(pipeline="ocr")
 
 # ------------------ PATHS ------------------
 MODEL_PATH = SAVED_MODEL_PATH
@@ -31,7 +39,7 @@ LABELS = {0: "Neutral", 1: "Positive"}
 transform = transforms.Compose([
     transforms.Resize(IMAGE_SIZE),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
 # ------------------ LOAD MODEL ------------------
@@ -41,6 +49,57 @@ with open(MODEL_CONFIG, "r") as f:
 model = FG_MFN(cfg).to(DEVICE)
 model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
 model.eval()
+
+# ------------------ OCR UTILITIES ------------------
+def log_error(msg):
+    print(f"[ERROR] {msg}")  # simple logger, replace with proper logging if needed
+
+def extract_text(image_path_or_pil):
+    try:
+        # If PIL image, save temporarily
+        if isinstance(image_path_or_pil, Image.Image):
+            import tempfile
+            tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            image_path_or_pil.save(tmp_file.name)
+            image_path = tmp_file.name
+        else:
+            image_path = image_path_or_pil
+
+        result = list(ocr_model.predict(image_path))
+
+        rec_texts = []
+        rec_scores = []
+
+        if isinstance(result, list) and result and isinstance(result[0], dict):
+            if "rec_texts" in result[0]:
+                rec_texts = result[0]["rec_texts"]
+                rec_scores = result[0].get("rec_scores", [])
+            elif "data" in result[0]:
+                for item in result[0]["data"]:
+                    if isinstance(item, dict) and "text" in item:
+                        rec_texts.append(item["text"])
+                        rec_scores.append(item.get("score", None))
+        elif isinstance(result, dict):
+            if "rec_texts" in result:
+                rec_texts = result["rec_texts"]
+                rec_scores = result.get("rec_scores", [])
+            elif "data" in result:
+                for item in result["data"]:
+                    if isinstance(item, dict) and "text" in item:
+                        rec_texts.append(item["text"])
+                        rec_scores.append(item.get("score", None))
+
+        text = " ".join(rec_texts).strip()
+        avg_score = sum([s for s in rec_scores if s is not None]) / len([s for s in rec_scores if s is not None]) if rec_scores else 0.0
+
+        if not text:
+            log_error(f"No text recognized for {image_path}")
+            return "", avg_score
+
+        return text, avg_score
+    except Exception as e:
+        log_error(f"OCR Failed for {image_path}: {str(e)}\n{traceback.format_exc()}")
+        return "", 0.0
 
 # ------------------ INFERENCE FUNCTION ------------------
 def predict(images):
@@ -52,20 +111,23 @@ def predict(images):
     """
     results = []
 
-    # Perform OCR automatically
-    ocr_texts = [pytesseract.image_to_string(img).strip() for img in images]
+    # Perform OCR automatically using extract_text
+    ocr_texts = []
+    for img in images:
+        text, score = extract_text(img)
+        ocr_texts.append(text)
 
     # Batch processing
     for i in range(0, len(images), BATCH_SIZE):
-        batch_imgs = images[i:i+BATCH_SIZE]
-        batch_texts = ocr_texts[i:i+BATCH_SIZE]
+        batch_imgs = images[i:i + BATCH_SIZE]
+        batch_texts = ocr_texts[i:i + BATCH_SIZE]
 
         # Process images
         img_tensors = torch.stack([transform(img) for img in batch_imgs]).to(DEVICE)
 
         # Tokenize text
         text_tensors = torch.stack([
-            CustomDataset.tokenize_text(t, max_len=MAX_TEXT_LEN) for t in batch_texts
+            tokenize_text(t) for t in batch_texts
         ]).to(DEVICE)
 
         # Forward pass

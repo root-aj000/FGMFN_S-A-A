@@ -5,10 +5,11 @@ import torch
 from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
-from image_preprocessing import resize_image, normalize_image
-from text_preprocessing import clean_text, tokenize_text
-from augmentation import augment_image
+from preprocessing.image_preprocessing import resize_image, normalize_image
+from preprocessing.text_preprocessing import clean_text, tokenize_text
+from preprocessing.augmentation import augment_image
 from utils.path import IMAGE_DIR , TRAIN_CSV
+
 
 # Config / Paths
 IMAGE_DIR = IMAGE_DIR
@@ -33,7 +34,7 @@ class CustomDataset(Dataset):
         row = self.df.iloc[idx]
 
         # --- Load and preprocess image ---
-        image_path = os.path.join(self.image_dir, row["image_name"])
+        image_path = os.path.join(self.image_dir, row["image_path"])
         img = cv2.imread(image_path)
         if img is None:
             # Return a black image if file missing/corrupted

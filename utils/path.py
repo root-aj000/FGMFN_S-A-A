@@ -30,7 +30,7 @@ SAVED_MODEL_DIR = "models/saved_models/"
     # TEST_CSV = "data/processed/test.csv"
     # MODEL_CONFIG = "models/configs/model_config.json"
     # LOG_DIR = "data/logs/"
-SAVED_MODEL_PATH = "models/saved_models/model_final.pt"
+SAVED_MODEL_PATH = "models/saved_models/model_best.pt"
 
 # server\predict.py
     # SAVED_MODEL_PATH = "models/saved_models/model_final.pt"
