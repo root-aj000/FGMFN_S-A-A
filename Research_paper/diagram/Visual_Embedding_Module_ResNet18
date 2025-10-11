@@ -1,0 +1,43 @@
+digraph Visual_Embedding_Module_ResNet18 {
+	bgcolor=white fontname=Helvetica fontsize=12 rankdir=TB
+	Input [label="Preprocessed Image Tensor
+I ∈ R^{H×W×3}" fillcolor=white shape=rect style=filled]
+	Conv1 [label="Conv1: 7×7 Conv, Stride 2
+Detects edges & simple textures" fillcolor=white shape=box style="rounded,filled"]
+	MaxPool [label="Max Pool: 3×3
+Reduces spatial size, keeps strong features" fillcolor=white shape=box style="rounded,filled"]
+	Res1 [label="Residual Block 1
+Low-level features (edges, corners)
+2×3×3 Conv + Skip Connection" fillcolor=white shape=box style="rounded,filled"]
+	Res2 [label="Residual Block 2
+Mid-level features (logos, shapes)
+2×3×3 Conv + Skip Connection" fillcolor=white shape=box style="rounded,filled"]
+	Res3 [label="Residual Block 3
+High-level patterns (layout, structure)
+2×3×3 Conv + Skip Connection" fillcolor=white shape=box style="rounded,filled"]
+	Res4 [label="Residual Block 4
+Semantic-level features (relationships)
+2×3×3 Conv + Skip Connection" fillcolor=white shape=box style="rounded,filled"]
+	Upsample [label="Multiscale Alignment
+(upsample/pool to uniform size)" fillcolor=white shape=box style="rounded,filled"]
+	Concat [label="Feature Concatenation
+Combine all scales [Res1–Res4]" fillcolor=white shape=box style="rounded,filled"]
+	Fuse [label="Projection Layer
+Fused Embedding V ∈ R^{d_v}" fillcolor=white shape=rect style=filled]
+	Input -> Conv1
+	Conv1 -> MaxPool
+	MaxPool -> Res1
+	Res1 -> Res2
+	Res2 -> Res3
+	Res3 -> Res4
+	Res1 -> Upsample [label="Low-level features" style=dashed]
+	Res2 -> Upsample [label="Mid-level features" style=dashed]
+	Res3 -> Upsample [label="High-level features" style=dashed]
+	Res4 -> Upsample [label="Semantic features" style=dashed]
+	Upsample -> Concat
+	Concat -> Fuse
+	Output [label="Visual Embedding
+V ∈ R^{d_v}" fillcolor=white shape=rect style=filled]
+	Fuse -> Output
+	concentrate=true
+}

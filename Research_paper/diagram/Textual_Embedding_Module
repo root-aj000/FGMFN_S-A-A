@@ -1,0 +1,34 @@
+digraph Textual_Embedding_Module {
+	bgcolor=white fontname=Helvetica fontsize=12 rankdir=TB
+	OCR [label="OCR Extracted Text
+T = [t1, t2, ..., tn]" fillcolor=white shape=ellipse style=filled]
+	Clean [label="Text Cleaning
+- Remove special chars
+- Tokenization
+- Padding/Truncation" fillcolor=white shape=box style="rounded,filled"]
+	Embed [label="Token Embedding Layer
+Convert tokens → 768-d vectors" fillcolor=white shape=box style="rounded,filled"]
+	Pos [label="Add Positional Encoding
+Retain word order" fillcolor=white shape=box style="rounded,filled"]
+	subgraph cluster_transformer {
+		color=black label="DistilBERT Transformer Blocks (6 Layers)" style=dashed
+		SelfAttn [label="Self-Attention
+Each token attends to all others"]
+		FFN [label="Feed-Forward Network
+Capture higher-level representations"]
+		LayerNorm [label="Layer Norm + Residual
+Stabilize training"]
+	}
+	Pool [label="Pooling
+CLS token or mean pooling → Sentence Embedding" fillcolor=white shape=box style="rounded,filled"]
+	E [label="Textual Embedding
+E ∈ ℝ^{d_t}" fillcolor=white shape=ellipse style=filled]
+	OCR -> Clean
+	Clean -> Embed
+	Embed -> Pos
+	Pos -> SelfAttn
+	SelfAttn -> FFN
+	FFN -> LayerNorm
+	LayerNorm -> Pool
+	Pool -> E
+}

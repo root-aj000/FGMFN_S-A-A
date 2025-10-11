@@ -1,0 +1,43 @@
+digraph Advertisement_Input_Module_Detailed {
+	bgcolor=white fontname=Helvetica fontsize=12 rankdir=TB
+	Raw [label="Raw Advertisement Image
+(contains embedded text & graphics)" fillcolor=white shape=rect style=filled]
+	subgraph cluster_image {
+		color=black fontsize=11 label="Image Processing" style=dashed
+		Resize [label="Resize to Standard Resolution
+(224x224x3)" shape=box]
+		Normalize [label="Pixel Normalization
+(subtract mean / divide std)" shape=box]
+		Augment [label="Data Augmentation 
+rotation, flip, color jitter" shape=box]
+		Resize -> Normalize
+		Normalize -> Augment
+	}
+	subgraph cluster_ocr {
+		color=black fontsize=11 label="OCR Extraction" style=dashed
+		OCRTool [label="OCR (PaddleOCR)
+Extract embedded text from image" shape=box]
+	}
+	subgraph cluster_text {
+		color=black fontsize=11 label="Text Processing" style=dashed
+		Clean [label="Clean Text
+(remove special chars, fix artifacts)" shape=box]
+		Tokenize [label="Tokenization
+(split into subwords / tokens)" shape=box]
+		Pad [label="Padding / Truncation
+(uniform sequence length)" shape=box]
+		Clean -> Tokenize
+		Tokenize -> Pad
+	}
+	ImgOut [label="Preprocessed Image Tensor
+I ∈ R^{H×W×3}" fillcolor=white shape=rect style=filled]
+	TxtOut [label="Tokenized Text Sequence
+T = [t₁, t₂, ..., tₙ]" fillcolor=white shape=rect style=filled]
+	Raw -> Resize [label="visual path"]
+	Raw -> OCRTool [label="text extraction"]
+	OCRTool -> Clean
+	Augment -> ImgOut
+	Pad -> TxtOut
+	OCRTool -> Augment [label="( text-aware augmentation)" style=dotted]
+	concentrate=true
+}

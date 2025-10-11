@@ -1,0 +1,17 @@
+digraph Dimensional_Projection_Module {
+	bgcolor=white fontname=Helvetica fontsize=12 rankdir=TB
+	V [label="Visual Embedding
+V ∈ ℝ^{d_v} (e.g., 2048)" fillcolor=white shape=ellipse style=filled]
+	T [label="Text Embedding
+T ∈ ℝ^{d_t} (e.g., 768)" fillcolor=white shape=ellipse style=filled]
+	ProjV [label="Linear Projection
+V' = W_v V + b_v" fillcolor=white shape=box style="rounded,filled"]
+	ProjT [label="Linear Projection
+T' = W_t T + b_t" fillcolor=white shape=box style="rounded,filled"]
+	Latent [label="Shared Latent Space
+Dimensionality: d_s" fillcolor=white shape=ellipse style=filled]
+	V -> ProjV
+	T -> ProjT
+	ProjV -> Latent
+	ProjT -> Latent
+}

@@ -1,0 +1,20 @@
+digraph Multi_Task_Learning_Module {
+	bgcolor=white fontname=Helvetica fontsize=12 rankdir=TB
+	Mms [label="Joint Multimodal Embedding
+M_{ms} ∈ ℝ^{d_s}" fillcolor=white shape=ellipse style=filled]
+	Sentiment [label="Sentiment Classification
+Softmax" fillcolor=white shape=box style="rounded,filled"]
+	Emotion [label="Emotion Detection
+Softmax" fillcolor=white shape=box style="rounded,filled"]
+	Theme [label="Theme Categorization
+Softmax" fillcolor=white shape=box style="rounded,filled"]
+	Engagement [label="Engagement Prediction
+Regression (Likes, Shares, CTR)" fillcolor=white shape=box style="rounded,filled"]
+	Trust [label="Trustworthiness Assessment
+Binary / Probabilistic" fillcolor=white shape=box style="rounded,filled"]
+	Mms -> Sentiment
+	Mms -> Emotion
+	Mms -> Theme
+	Mms -> Engagement
+	Mms -> Trust
+}

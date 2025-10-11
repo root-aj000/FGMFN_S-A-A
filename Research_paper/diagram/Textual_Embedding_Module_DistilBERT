@@ -1,0 +1,37 @@
+digraph Textual_Embedding_Module_DistilBERT {
+	bgcolor=white fontname=Helvetica fontsize=12 rankdir=TB
+	Input [label="Tokenized Text Sequence
+T = [t₁, t₂, ..., tₙ]" fillcolor=white shape=rect style=filled]
+	Embed [label="Token Embedding Layer
+(WordPiece → 768-d vectors)" fillcolor=white shape=box style="rounded,filled"]
+	PosEnc [label="Positional Encoding
+Adds sequential order info" fillcolor=white shape=box style="rounded,filled"]
+	TF1 [label="Transformer Block 1
+(Self-Attention + FFN + Residual)" fillcolor=white shape=box style="rounded,filled"]
+	TF2 [label="Transformer Block 2
+Captures deeper context" fillcolor=white shape=box style="rounded,filled"]
+	TF3 [label="Transformer Block 3
+Enhances semantic relations" fillcolor=white shape=box style="rounded,filled"]
+	TF4 [label="Transformer Block 4
+Models long-range dependencies" fillcolor=white shape=box style="rounded,filled"]
+	TF5 [label="Transformer Block 5
+Refines contextual meaning" fillcolor=white shape=box style="rounded,filled"]
+	TF6 [label="Transformer Block 6
+Final contextual representation" fillcolor=white shape=box style="rounded,filled"]
+	Pool [label="Pooling Layer
+(CLS token / Mean pooling)" fillcolor=white shape=box style="rounded,filled"]
+	Output [label="Text Embedding
+E ∈ R^{d_t}
+(Semantic, Syntactic, Sentiment Features)" fillcolor=white shape=rect style=filled]
+	Input -> Embed
+	Embed -> PosEnc
+	PosEnc -> TF1
+	TF1 -> TF2
+	TF2 -> TF3
+	TF3 -> TF4
+	TF4 -> TF5
+	TF5 -> TF6
+	TF6 -> Pool
+	Pool -> Output
+	concentrate=true
+}

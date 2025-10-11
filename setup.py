@@ -20,30 +20,30 @@ def install_env():
 
 def prepare_data():
     return [
-        "python dataset_generator/prepare_data.py",
+        "python -m dataset_generator.prepare_data",
         "python dataset_generator/preprocess.py"
     ]
 
 def train_model():
     return [
-        "python training/train.py",
+        "python -m training.train",
         "echo '✅ Model saved in models/saved_models/'"
     ]
 
 def evaluate_model():
     return [
-        "python training/evaluate.py",
+        "python -m training.evaluate",
         "echo '📊 Evaluation report saved in data/logs/'"
     ]
 
 def serve_api():
     return [
-        "uvicorn server.app:app --port 8000 --reload"
+        "python -m server.app"
     ]
-
+ 
 def launch_frontend():
     return [
-        "python -m webbrowser -t http://127.0.0.1:8000",
+        "python -m http.server 5500",
         "echo '🌐 Frontend launched in browser'"
     ]
 

@@ -1,0 +1,19 @@
+digraph Cross_Modal_Fusion_Module {
+	bgcolor=white fontname=Helvetica fontsize=12 rankdir=TB
+	Vs [label="Visual Embedding
+V_s ∈ ℝ^{d_s}" fillcolor=white shape=ellipse style=filled]
+	Ts [label="Text Embedding
+T_s ∈ ℝ^{d_s}" fillcolor=white shape=ellipse style=filled]
+	Text2Img [label="Text-to-Image Attention
+E_attn = softmax(Q_t K_v^T)V_s" fillcolor=white shape=box style="rounded,filled"]
+	Img2Text [label="Image-to-Text Attention
+V_attn = softmax(Q_v K_t^T)T_s" fillcolor=white shape=box style="rounded,filled"]
+	Fusion [label="Joint Fusion
+M = concat(E_attn, V_attn) + Residual" fillcolor=white shape=box style="rounded,filled"]
+	Vs -> Text2Img
+	Ts -> Text2Img
+	Vs -> Img2Text
+	Ts -> Img2Text
+	Text2Img -> Fusion
+	Img2Text -> Fusion
+}
