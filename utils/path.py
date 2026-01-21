@@ -5,7 +5,7 @@ IMAGE_OUTPUT_DIR = "data/images/"
 LOG_DIR = "data/logs/"
 
 # preprocessing\dataset.py
-IMAGE_DIR = "data/images/" 
+IMAGE_DIR = "data/processed/images/" 
 TRAIN_CSV = "data/processed/train.csv" 
 
 # models/fg_mfn.py

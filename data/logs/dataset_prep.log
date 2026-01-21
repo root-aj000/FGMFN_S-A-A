@@ -1,0 +1,173 @@
+No data samples collected. Exiting.
+HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+Predictions made for 1 images.
+HTTP Request: POST http://testserver/predict "HTTP/1.1 200 OK"
+Scanning for images...
+Found 5 images.
+Collected 5 valid samples.
+Processing image: tests/temp_generator\raw\raw_3.jpg
+Processing image: tests/temp_generator\raw\raw_4.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9879
+HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+Predictions made for 1 images.
+HTTP Request: POST http://testserver/predict "HTTP/1.1 200 OK"
+Scanning for images...
+Found 5 images.
+Collected 5 valid samples.
+Processing image: tests/temp_generator\raw\raw_3.jpg
+Processing image: tests/temp_generator\raw\raw_4.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9879
+HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+Predictions made for 1 images.
+HTTP Request: POST http://testserver/predict "HTTP/1.1 200 OK"
+Scanning for images...
+Found 3 images.
+Collected 3 valid samples.
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9900
+HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+Predictions made for 1 images.
+HTTP Request: POST http://testserver/predict "HTTP/1.1 200 OK"
+Scanning for images...
+Found 3 images.
+Collected 3 valid samples.
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9900
+Scanning for images...
+Found 3 images.
+Collected 3 valid samples.
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9900
+
+=== Dataset Preparation Complete ===
+Train samples: 1
+Val samples: 1
+Test samples: 1
+
+NOTE: Labels were randomly generated for demonstration.
+For actual training, please manually label your data in the CSV files.
+Scanning for images...
+Found 3 images.
+Collected 3 valid samples.
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9900
+
+=== Dataset Preparation Complete ===
+Train samples: 1
+Val samples: 1
+Test samples: 1
+
+NOTE: Labels were randomly generated for demonstration.
+For actual training, please manually label your data in the CSV files.
+Scanning for images...
+Found 3 images.
+Collected 3 valid samples.
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9900
+
+=== Dataset Preparation Complete ===
+Train samples: 1
+Val samples: 1
+Test samples: 1
+
+NOTE: Labels were randomly generated for demonstration.
+For actual training, please manually label your data in the CSV files.
+HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+Predictions made for 1 images.
+Scanning for images...
+Found 3 images.
+Collected 3 valid samples.
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9900
+
+=== Dataset Preparation Complete ===
+Train samples: 1
+Val samples: 1
+Test samples: 1
+
+NOTE: Labels were randomly generated for demonstration.
+For actual training, please manually label your data in the CSV files.
+HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+Predictions made for 1 images.
+HTTP Request: POST http://testserver/predict "HTTP/1.1 200 OK"
+Scanning for images...
+Found 3 images.
+Collected 3 valid samples.
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9900
+
+=== Dataset Preparation Complete ===
+Train samples: 1
+Val samples: 1
+Test samples: 1
+
+NOTE: Labels were randomly generated for demonstration.
+For actual training, please manually label your data in the CSV files.
+HTTP Request: GET http://testserver/health "HTTP/1.1 200 OK"
+Predictions made for 1 images.
+HTTP Request: POST http://testserver/predict "HTTP/1.1 200 OK"
+Scanning for images...
+Found 3 images.
+Collected 3 valid samples.
+Processing image: tests/temp_generator\raw\raw_1.jpg
+Processing image: tests/temp_generator\raw\raw_2.jpg
+Processing image: tests/temp_generator\raw\raw_0.jpg
+Saved CSV: tests/temp_generator\processed\train.csv
+Saved CSV: tests/temp_generator\processed\val.csv
+Saved CSV: tests/temp_generator\processed\test.csv
+Average OCR confidence score: 0.9900
+
+=== Dataset Preparation Complete ===
+Train samples: 1
+Val samples: 1
+Test samples: 1
+
+NOTE: Labels were randomly generated for demonstration.
+For actual training, please manually label your data in the CSV files.

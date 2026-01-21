@@ -10,7 +10,7 @@ from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
 from tqdm import tqdm
 
-from models.fg_mfn import FG_MFN
+from models.fg_mfn import FG_MFN, ATTRIBUTE_NAMES
 from training.logger import Logger
 from utils.path import TRAIN_CSV, VAL_CSV, SAVED_MODEL_DIR, MODEL_CONFIG
 from preprocessing.dataset import CustomDataset
@@ -42,6 +42,14 @@ val_dataset = CustomDataset(VAL_CSV)
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
+# Determine which attributes are available for training
+available_attributes = train_dataset.available_attributes if hasattr(train_dataset, 'available_attributes') else []
+legacy_mode = train_dataset.legacy_mode if hasattr(train_dataset, 'legacy_mode') else True
+
+print(f"Training mode: {'legacy (single label)' if legacy_mode else 'multi-attribute'}")
+if not legacy_mode:
+    print(f"Available attributes: {available_attributes}")
+
 # ------------------ MODEL ------------------
 model = FG_MFN(cfg).to(DEVICE)
 
@@ -63,61 +71,123 @@ patience_counter = 0
 def train_epoch(model, loader, criterion, optimizer, device, scaler=None):
     model.train()
     train_losses = []
-    all_preds, all_labels = [], []
+    all_preds = {attr: [] for attr in ATTRIBUTE_NAMES}
+    all_labels = {attr: [] for attr in ATTRIBUTE_NAMES}
 
     for batch in tqdm(loader, desc="Training", leave=False):
         images = batch["visual"].to(device)
         texts = batch["text"].to(device)
-        labels = (batch["label"] - 1).to(device)
-
+        masks = batch["attention_mask"].to(device)
 
         optimizer.zero_grad()
         with torch.amp.autocast(device_type="cuda", enabled=(scaler is not None)):
-            outputs = model(images, texts)
-            loss = criterion(outputs, labels)
+            outputs = model(images, texts, attention_mask=masks)
+            
+            # Compute multi-task loss
+            total_loss = 0
+            num_attrs = 0
+            
+            if legacy_mode:
+                # Backwards compatibility: single sentiment label
+                labels = (batch["label"] - 1).to(device)
+                if "sentiment" in outputs:
+                    loss = criterion(outputs["sentiment"], labels)
+                else:
+                    # Use first available head
+                    first_key = list(outputs.keys())[0]
+                    loss = criterion(outputs[first_key], labels)
+                total_loss = loss
+            else:
+                # Multi-attribute loss
+                for attr in ATTRIBUTE_NAMES:
+                    if attr in outputs and attr in batch:
+                        labels = batch[attr].to(device)
+                        loss = criterion(outputs[attr], labels)
+                        total_loss += loss
+                        num_attrs += 1
+                        
+                        # Track predictions
+                        preds = torch.argmax(outputs[attr], dim=1).cpu().numpy()
+                        all_preds[attr].extend(preds)
+                        all_labels[attr].extend(labels.cpu().numpy())
+                
+                if num_attrs > 0:
+                    total_loss = total_loss / num_attrs  # Average loss
 
         if scaler:
-            scaler.scale(loss).backward()
+            scaler.scale(total_loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
-            loss.backward()
+            total_loss.backward()
             optimizer.step()
 
-        train_losses.append(loss.item())
-        preds = torch.argmax(outputs, dim=1).cpu().numpy()
-        all_preds.extend(preds)
-        all_labels.extend(labels.cpu().numpy())
+        train_losses.append(total_loss.item())
 
     avg_loss = np.mean(train_losses)
-    acc = accuracy_score(all_labels, all_preds)
-    f1 = f1_score(all_labels, all_preds, average='weighted')
-    return avg_loss, acc, f1
+    
+    # Compute per-attribute metrics
+    metrics = {"loss": avg_loss}
+    for attr in ATTRIBUTE_NAMES:
+        if all_preds[attr]:
+            metrics[f"{attr}_acc"] = accuracy_score(all_labels[attr], all_preds[attr])
+            metrics[f"{attr}_f1"] = f1_score(all_labels[attr], all_preds[attr], average='weighted', zero_division=0)
+    
+    return metrics
 
 # ------------------ VALIDATION FUNCTION ------------------
 def validate_epoch(model, loader, criterion, device):
     model.eval()
     val_losses = []
-    val_preds, val_labels = [], []
+    all_preds = {attr: [] for attr in ATTRIBUTE_NAMES}
+    all_labels = {attr: [] for attr in ATTRIBUTE_NAMES}
 
     with torch.no_grad():
         for batch in tqdm(loader, desc="Validation", leave=False):
             images = batch["visual"].to(device)
             texts = batch["text"].to(device)
-            labels = (batch["label"] - 1).to(device)
+            masks = batch["attention_mask"].to(device)
 
-            outputs = model(images, texts)
-            loss = criterion(outputs, labels)
+            outputs = model(images, texts, attention_mask=masks)
+            
+            # Compute multi-task loss
+            total_loss = 0
+            num_attrs = 0
+            
+            if legacy_mode:
+                labels = (batch["label"] - 1).to(device)
+                if "sentiment" in outputs:
+                    loss = criterion(outputs["sentiment"], labels)
+                else:
+                    first_key = list(outputs.keys())[0]
+                    loss = criterion(outputs[first_key], labels)
+                total_loss = loss
+            else:
+                for attr in ATTRIBUTE_NAMES:
+                    if attr in outputs and attr in batch:
+                        labels = batch[attr].to(device)
+                        loss = criterion(outputs[attr], labels)
+                        total_loss += loss
+                        num_attrs += 1
+                        
+                        preds = torch.argmax(outputs[attr], dim=1).cpu().numpy()
+                        all_preds[attr].extend(preds)
+                        all_labels[attr].extend(labels.cpu().numpy())
+                
+                if num_attrs > 0:
+                    total_loss = total_loss / num_attrs
 
-            val_losses.append(loss.item())
-            preds = torch.argmax(outputs, dim=1).cpu().numpy()
-            val_preds.extend(preds)
-            val_labels.extend(labels.cpu().numpy())
+            val_losses.append(total_loss.item())
 
     avg_loss = np.mean(val_losses)
-    acc = accuracy_score(val_labels, val_preds)
-    f1 = f1_score(val_labels, val_preds, average='weighted')
-    return avg_loss, acc, f1
+    
+    metrics = {"loss": avg_loss}
+    for attr in ATTRIBUTE_NAMES:
+        if all_preds[attr]:
+            metrics[f"{attr}_acc"] = accuracy_score(all_labels[attr], all_preds[attr])
+            metrics[f"{attr}_f1"] = f1_score(all_labels[attr], all_preds[attr], average='weighted', zero_division=0)
+    
+    return metrics
 
 # ------------------ MAIN TRAIN LOOP ------------------
 def main():
@@ -125,23 +195,26 @@ def main():
     scaler = torch.cuda.amp.GradScaler("cuda") if DEVICE == "cuda" else None
 
     for epoch in range(1, EPOCHS + 1):
-        train_loss, train_acc, train_f1 = train_epoch(model, train_loader, criterion, optimizer, DEVICE, scaler)
-        val_loss, val_acc, val_f1 = validate_epoch(model, val_loader, criterion, DEVICE)
+        train_metrics = train_epoch(model, train_loader, criterion, optimizer, DEVICE, scaler)
+        val_metrics = validate_epoch(model, val_loader, criterion, DEVICE)
 
         # Log metrics
-        logger.log_metrics({
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "train_acc": train_acc,
-            "val_acc": val_acc,
-            "train_f1": train_f1,
-            "val_f1": val_f1
-        }, epoch)
+        log_data = {}
+        for key, value in train_metrics.items():
+            log_data[f"train_{key}"] = value
+        for key, value in val_metrics.items():
+            log_data[f"val_{key}"] = value
+        logger.log_metrics(log_data, epoch)
 
-        print(f"Epoch [{epoch}/{EPOCHS}] "
-              f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} "
-              f"Train Acc: {train_acc:.4f} | Val Acc: {val_acc:.4f} "
-              f"Train F1: {train_f1:.4f} | Val F1: {val_f1:.4f}")
+        # Print summary
+        train_loss = train_metrics["loss"]
+        val_loss = val_metrics["loss"]
+        print(f"Epoch [{epoch}/{EPOCHS}] Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        
+        # Print per-attribute accuracies
+        for attr in ATTRIBUTE_NAMES:
+            if f"{attr}_acc" in train_metrics:
+                print(f"  {attr}: Train Acc={train_metrics[f'{attr}_acc']:.3f}, Val Acc={val_metrics.get(f'{attr}_acc', 0):.3f}")
 
         # Scheduler step
         scheduler.step(val_loss)

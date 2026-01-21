@@ -24,4 +24,7 @@ def tokenize_text(text, max_length=128):
         truncation=True,
         return_tensors="pt"
     )
-    return encoding["input_ids"].squeeze(0)
+    return {
+        "input_ids": encoding["input_ids"].squeeze(0),
+        "attention_mask": encoding["attention_mask"].squeeze(0)
+    }

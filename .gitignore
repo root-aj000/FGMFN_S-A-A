@@ -1,17 +1,7 @@
-# Environments
-.env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-.qodo
-python_scr.py
-data/archive/
-data
-models/saved_models
-
-tejaswini8137.jpg
+aj
+.\aj
+saved_models
+data/images
+data/processed
+data/raw
+update
