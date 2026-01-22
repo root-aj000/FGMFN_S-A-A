@@ -1,0 +1,610 @@
+This script is your **evaluation tool**:  
+it loads your trained multimodal model, runs it on the **test set**, and then:
+
+- Computes accuracy and macro‑F1 for each attribute (sentiment, emotion, etc.)
+- Draws and saves confusion matrices
+- Writes a CSV report with metrics
+- Prints a summary
+
+I’ll go through it top to bottom.
+
+---
+
+## 1. Imports
+
+```python
+import os
+import torch
+import numpy as np
+import pandas as pd
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+import json
+
+from preprocessing.dataset import CustomDataset
+from models.fg_mfn import FG_MFN, ATTRIBUTE_NAMES
+from utils.path import TEST_CSV, SAVED_MODEL_PATH, MODEL_CONFIG, LOG_DIR
+```
+
+- `os` – paths and directories.
+- `torch` – PyTorch (for loading model and tensors).
+- `numpy` – basic numerical utilities.
+- `pandas` – for creating and writing the final CSV report.
+- `sklearn.metrics`:
+  - `accuracy_score` – fraction of correct predictions.
+  - `f1_score` – F1 measure (harmonic mean of precision & recall).
+  - `confusion_matrix`, `ConfusionMatrixDisplay` – to build and visualize confusion matrices.
+- `matplotlib.pyplot` – to draw and save confusion matrix images.
+- `json` – to read model config.
+
+- `CustomDataset` – the DataSet class that reads images/text/labels from a CSV and preprocesses them.
+- `FG_MFN, ATTRIBUTE_NAMES` – your multimodal model class and the standard list of attribute names.
+- `TEST_CSV, SAVED_MODEL_PATH, MODEL_CONFIG, LOG_DIR` – predefined paths from a central config.
+
+Visually:
+
+> This script pulls together: data loading, model, metrics, and plotting.
+
+---
+
+## 2. Paths
+
+```python
+# ------------------ PATHS ------------------
+TEST_CSV = TEST_CSV 
+MODEL_PATH = SAVED_MODEL_PATH 
+MODEL_CONFIG = MODEL_CONFIG 
+EVAL_LOG_DIR = LOG_DIR 
+
+os.makedirs(EVAL_LOG_DIR, exist_ok=True)
+```
+
+- Reassigns imported constants to local variables with the same names; functionally, they don’t change.
+
+  - `TEST_CSV` – CSV file describing the test set.
+  - `MODEL_PATH` – where the trained model weights (.pt file) are saved.
+  - `MODEL_CONFIG` – path to the JSON config file.
+  - `EVAL_LOG_DIR` – directory where evaluation outputs (plots, report CSV) will be saved.
+
+- `os.makedirs(EVAL_LOG_DIR, exist_ok=True)`  
+  Ensure the evaluation log directory exists.
+
+So: “Make a folder to store evaluation results.”
+
+---
+
+## 3. Hyperparameters
+
+```python
+# ------------------ HYPERPARAMS ------------------
+BATCH_SIZE = 1  # 32 increase when add data
+MAX_TEXT_LEN = 128
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+```
+
+- `BATCH_SIZE = 1`  
+  Processes one test sample at a time.
+  - Comment suggests: later, when there’s more data, you might increase it to 32.
+
+- `MAX_TEXT_LEN = 128`  
+  Maximum token length expected for text; here, it’s not used directly inside this file but matches tokenizer settings elsewhere.
+
+- `DEVICE`  
+  - `"cuda"` if GPU is available.
+  - Otherwise `"cpu"`.
+
+All model and data tensors will be moved to `DEVICE`.
+
+---
+
+## 4. Load model config
+
+```python
+# ------------------ LOAD CONFIG ------------------
+with open(MODEL_CONFIG, "r") as f:
+    cfg = json.load(f)
+```
+
+- Opens the JSON config file at `MODEL_CONFIG`.
+- Loads it into a Python dictionary `cfg`.
+
+`cfg` includes things like:
+
+- Which image backbone and text encoder to use.
+- Hidden dimensions, dropout.
+- Attributes and their labels.
+
+This `cfg` will be used to construct `FG_MFN`.
+
+---
+
+## 5. Load dataset and DataLoader
+
+```python
+# ------------------ LOAD DATASET ------------------
+test_dataset = CustomDataset(TEST_CSV)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+```
+
+- `test_dataset = CustomDataset(TEST_CSV)`  
+  Uses your `CustomDataset` to:
+
+  - Read the test CSV.
+  - Load and preprocess images (resize, normalize).
+  - Clean and tokenize text.
+  - Prepare labels (either single label or multi-attribute).
+
+- `test_loader = DataLoader(...)`  
+  Wraps `test_dataset` in a PyTorch `DataLoader`:
+
+  - `batch_size=BATCH_SIZE` – here 1 sample per batch.
+  - `shuffle=False` – keep the test data order fixed.
+  - `num_workers=0` – data loading happens in the main process (simpler but slower).
+
+Visually:
+
+> CSV → CustomDataset → DataLoader → “stream of batches” ready for the model.
+
+---
+
+## 6. Determine evaluation mode (legacy vs multi-attribute)
+
+```python
+# Determine mode
+legacy_mode = test_dataset.legacy_mode if hasattr(test_dataset, 'legacy_mode') else True
+
+print(f"Evaluation mode: {'legacy (single label)' if legacy_mode else 'multi-attribute'}")
+```
+
+- `CustomDataset` can work in:
+  - **Legacy mode**: single label column (`label_num`).
+  - **New multi-attribute mode**: separate columns for each attribute (`sentiment_num`, `emotion_num`, etc.).
+
+- `legacy_mode = test_dataset.legacy_mode` if that attribute exists; otherwise default to `True`.
+
+- The print tells you which mode you’re evaluating in:
+  - `legacy (single label)` – only one label per sample (usually `sentiment`).
+  - `multi-attribute` – multiple attributes per sample.
+
+So the script adapts how it reads labels and how it aggregates metrics.
+
+---
+
+## 7. Load trained model
+
+```python
+# ------------------ LOAD MODEL ------------------
+model = FG_MFN(cfg).to(DEVICE)
+model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+model.eval()
+```
+
+- `model = FG_MFN(cfg).to(DEVICE)`  
+  Builds the multimodal model using the config, then moves it to GPU/CPU.
+
+- `model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))`  
+  Loads the learned weights from the checkpoint file into the model.
+
+- `model.eval()`  
+  Puts the model in **evaluation mode**:
+  - Disables dropout.
+  - Uses running statistics for batchnorm layers, etc.
+
+```python
+print("Device:", DEVICE)
+print("Number of test samples:", len(test_dataset))
+```
+
+- Simple info:
+  - Where the model is running (GPU/CPU).
+  - How many test samples there are.
+
+---
+
+## 8. Prepare containers for predictions and labels
+
+```python
+# ------------------ EVALUATION LOOP ------------------
+all_preds = {attr: [] for attr in ATTRIBUTE_NAMES}
+all_labels = {attr: [] for attr in ATTRIBUTE_NAMES}
+```
+
+- `all_preds` and `all_labels` are dictionaries mapping each attribute name to a list:
+
+  Example structure:
+
+  ```python
+  all_preds = {
+    "sentiment": [],
+    "emotion": [],
+    ...
+  }
+  all_labels = {
+    "sentiment": [],
+    "emotion": [],
+    ...
+  }
+  ```
+
+As the loop runs, we’ll append predicted class indices and true labels into these lists.
+
+---
+
+## 9. Evaluation loop: go through the test set
+
+```python
+with torch.no_grad():
+    for batch in test_loader:
+```
+
+- `with torch.no_grad():`  
+  Tells PyTorch not to track gradients. This:
+  - Saves memory.
+  - Speeds up evaluation (no backprop needed).
+
+- `for batch in test_loader:`  
+  Iterates over test data in batches.  
+  Each `batch` is a dictionary from `CustomDataset.__getitem__`.
+
+---
+
+### 9.1 Move inputs to device
+
+```python
+        images = batch["visual"].to(DEVICE)
+        texts = batch["text"].to(DEVICE)
+        masks = batch["attention_mask"].to(DEVICE)
+```
+
+- `batch["visual"]` – image tensor(s), shape `[B, C, H, W]`.
+- `batch["text"]` – token IDs, shape `[B, seq_len]`.
+- `batch["attention_mask"]` – masks, shape `[B, seq_len]`.
+
+`.to(DEVICE)` moves them to GPU or CPU.
+
+---
+
+### 9.2 Run model
+
+```python
+        outputs = model(images, texts, attention_mask=masks)
+```
+
+- Calls your `FG_MFN` model’s `forward` method.
+
+- `outputs` is a dictionary:
+
+  ```python
+  {
+    "sentiment": tensor([B, num_sentiment_classes]),
+    "emotion":   tensor([B, num_emotion_classes]),
+    ...
+  }
+  ```
+
+Each tensor row is the logits for one sample in the batch.
+
+---
+
+### 9.3 Legacy mode: single-label evaluation
+
+```python
+        if legacy_mode:
+            # Backwards compatibility
+            labels = batch["label"]
+            if "sentiment" in outputs:
+                preds = torch.argmax(outputs["sentiment"], dim=1).cpu().numpy()
+            else:
+                first_key = list(outputs.keys())[0]
+                preds = torch.argmax(outputs[first_key], dim=1).cpu().numpy()
+            all_preds["sentiment"].extend(preds)
+            all_labels["sentiment"].extend(labels.cpu().numpy())
+```
+
+If `legacy_mode` is True:
+
+1. `labels = batch["label"]`  
+   - Ground truth labels (tensor of shape `[B]`).
+
+2. Choose which output head to use:
+   - Prefer the `"sentiment"` head if available.
+   - Otherwise, pick the first key in `outputs` (fallback).
+
+3. `torch.argmax(outputs["sentiment"], dim=1)`  
+   - For each sample in the batch, find the index of the highest logit → predicted class index.
+   - `dim=1` because classes are along dimension 1.
+
+4. `.cpu().numpy()`  
+   - Move predictions to CPU and convert to a NumPy array.
+
+5. `all_preds["sentiment"].extend(preds)`  
+   - Append these predicted indices to the list for `"sentiment"`.
+
+6. `all_labels["sentiment"].extend(labels.cpu().numpy())`  
+   - Append the true labels for sentiment.
+
+So in legacy mode, you only evaluate a single attribute: **sentiment**.
+
+---
+
+### 9.4 Multi-attribute mode
+
+```python
+        else:
+            # Multi-attribute evaluation
+            for attr in ATTRIBUTE_NAMES:
+                if attr in outputs and attr in batch:
+                    preds = torch.argmax(outputs[attr], dim=1).cpu().numpy()
+                    all_preds[attr].extend(preds)
+                    all_labels[attr].extend(batch[attr].cpu().numpy())
+```
+
+If not in legacy mode:
+
+- Loop over each `attr` in `ATTRIBUTE_NAMES`:
+
+  ```python
+  for attr in ATTRIBUTE_NAMES:
+      if attr in outputs and attr in batch:
+  ```
+
+- Only evaluate an attribute if:
+  - The model outputs a head for that attribute (`attr in outputs`)
+  - The batch has ground-truth labels for that attribute (`attr in batch`)
+
+For each qualifying attribute:
+
+1. `preds = torch.argmax(outputs[attr], dim=1).cpu().numpy()`  
+   - Predicted class indices for this batch and attribute.
+
+2. `all_preds[attr].extend(preds)`  
+   - Append them to the list of predictions for this attribute.
+
+3. `all_labels[attr].extend(batch[attr].cpu().numpy())`  
+   - Get the true labels from the batch and append.
+
+After the loop, `all_preds` and `all_labels` will contain full lists of predictions and labels for each attribute across the entire test set.
+
+---
+
+## 10. Compute metrics and confusion matrices
+
+```python
+# ------------------ METRICS ------------------
+report_data = []
+
+for attr in ATTRIBUTE_NAMES:
+    if all_preds[attr]:
+```
+
+- `report_data` – list where we’ll store metric summaries for each attribute.
+
+- Loop over each attribute name.
+- `if all_preds[attr]:`  
+  - Only proceed if there are predictions collected for this attribute (list is non-empty).
+
+---
+
+### 10.1 Accuracy and macro F1
+
+```python
+        accuracy = accuracy_score(all_labels[attr], all_preds[attr])
+        f1 = f1_score(all_labels[attr], all_preds[attr], average='macro', zero_division=0)
+        
+        print(f"\n{attr.upper()}:")
+        print(f"  Accuracy: {accuracy:.4f}")
+        print(f"  Macro F1: {f1:.4f}")
+```
+
+- `accuracy_score(y_true, y_pred)`  
+  - Proportion of test samples where prediction = ground truth.
+
+- `f1_score(y_true, y_pred, average='macro', zero_division=0)`  
+  - Macro F1: average F1 across all classes, treating each class equally.
+  - `zero_division=0` avoids errors if a class is never predicted.
+
+- Prints a small report block for this attribute:
+
+  ```
+  SENTIMENT:
+    Accuracy: 0.8912
+    Macro F1: 0.8765
+  ```
+
+---
+
+### 10.2 Save to report_data
+
+```python
+        report_data.append({
+            "attribute": attr,
+            "accuracy": accuracy,
+            "macro_f1": f1
+        })
+```
+
+- Adds a dictionary to `report_data` so it can later be written to a CSV summary.
+
+---
+
+### 10.3 Determine label names for confusion matrix
+
+```python
+        # Get label names for confusion matrix
+        if "ATTRIBUTES" in cfg and attr in cfg["ATTRIBUTES"]:
+            label_names = cfg["ATTRIBUTES"][attr]["labels"]
+            num_classes = cfg["ATTRIBUTES"][attr]["num_classes"]
+        else:
+            label_names = None
+            num_classes = len(set(all_labels[attr]))
+```
+
+- If the config has detailed info for this attribute:
+  - `label_names` – list of label names (e.g. `["negative", "neutral", "positive"]`).
+  - `num_classes` – defined number of classes (e.g., 3).
+
+- Otherwise (fallback):
+  - `label_names = None`
+  - `num_classes = len(set(all_labels[attr]))` – infer number of classes from the unique ground truth labels.
+
+These will be used to label axes on the confusion matrix.
+
+---
+
+### 10.4 Compute confusion matrix and save plot
+
+```python
+        # Compute and save confusion matrix
+        cm = confusion_matrix(all_labels[attr], all_preds[attr], labels=range(num_classes))
+```
+
+- `confusion_matrix(y_true, y_pred, labels=range(num_classes))`  
+  - Returns a 2D array where row = true class, column = predicted class.
+  - Each entry is how many times that combination occurred.
+  - `labels=range(num_classes)` ensures classes are ordered from 0 to num_classes-1.
+
+---
+
+```python
+        cm_fig, ax = plt.subplots(figsize=(8, 8))
+        if label_names:
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=label_names)
+        else:
+            disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+        disp.plot(cmap=plt.cm.Blues, ax=ax)
+        plt.title(f"Confusion Matrix - {attr}")
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(os.path.join(EVAL_LOG_DIR, f"confusion_matrix_{attr}.png"))
+        plt.close()
+```
+
+Step by step:
+
+1. `cm_fig, ax = plt.subplots(figsize=(8, 8))`  
+   - Create a new figure and axes, size 8×8 inches.
+
+2. If we know label names:
+
+   ```python
+   disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=label_names)
+   ```
+
+   - Labels axes with human-readable class names.
+
+   Otherwise:
+
+   ```python
+   disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+   ```
+
+3. `disp.plot(cmap=plt.cm.Blues, ax=ax)`  
+   - Draw the confusion matrix as a colored grid.
+   - Darker blue = higher count.
+
+4. `plt.title(f"Confusion Matrix - {attr}")`  
+   - Title like “Confusion Matrix - sentiment”.
+
+5. `plt.xticks(rotation=45, ha='right')`  
+   - Rotate x-axis labels 45° for readability.
+
+6. `plt.tight_layout()`  
+   - Adjust spacing to avoid label cut-off.
+
+7. `plt.savefig(os.path.join(EVAL_LOG_DIR, f"confusion_matrix_{attr}.png"))`  
+   - Save the figure as a PNG file in the evaluation log directory.
+
+8. `plt.close()`  
+   - Close the figure to free memory.
+
+Visually:
+
+> For each attribute, you get an image file showing where the model confuses one label with another.
+
+---
+
+## 11. Save evaluation report as CSV
+
+```python
+# ------------------ SAVE EVALUATION REPORT ------------------
+report_path = os.path.join(EVAL_LOG_DIR, "evaluation_report.csv")
+report_df = pd.DataFrame(report_data)
+report_df.to_csv(report_path, index=False)
+print(f"\nEvaluation report saved to: {report_path}")
+```
+
+- `report_data` is a list of dicts like:
+
+  ```python
+  [
+    {"attribute": "sentiment", "accuracy": 0.89, "macro_f1": 0.87},
+    {"attribute": "emotion",   "accuracy": 0.75, "macro_f1": 0.70},
+    ...
+  ]
+  ```
+
+- `pd.DataFrame(report_data)` turns it into a table.
+
+- `report_df.to_csv(report_path, index=False)`  
+  - Writes the table to a CSV file:
+
+    ```csv
+    attribute,accuracy,macro_f1
+    sentiment,0.89,0.87
+    emotion,0.75,0.70
+    ...
+    ```
+
+- Prints where the report was saved.
+
+---
+
+## 12. Print overall summary
+
+```python
+# Summary
+if report_data:
+    avg_accuracy = np.mean([r["accuracy"] for r in report_data])
+    avg_f1 = np.mean([r["macro_f1"] for r in report_data])
+    print(f"\n=== OVERALL ===")
+    print(f"Average Accuracy: {avg_accuracy:.4f}")
+    print(f"Average Macro F1: {avg_f1:.4f}")
+```
+
+If at least one attribute was evaluated:
+
+- `avg_accuracy` – mean of accuracy values across all attributes.
+- `avg_f1` – mean of macro-F1 across attributes.
+
+Then prints:
+
+```text
+=== OVERALL ===
+Average Accuracy: 0.8234
+Average Macro F1: 0.8012
+```
+
+This gives a quick sense of how the model is doing *on average* across all tasks/attributes.
+
+---
+
+## Big-picture summary
+
+Conceptually, this script:
+
+1. Loads config and trained model.
+2. Loads the test set (images + text + labels).
+3. Runs the model on each test sample (image + text).
+4. Collects predictions and ground-truth labels for:
+   - A single attribute (`sentiment`) in legacy mode, or
+   - Multiple attributes (`sentiment`, `emotion`, etc.) in new mode.
+5. For each attribute:
+   - Computes accuracy and macro-F1.
+   - Draws and saves a confusion matrix image.
+6. Saves a CSV summary of attribute-level metrics.
+7. Prints an overall average accuracy and F1.
+
+If you want, I can help you adapt this to:
+
+- Evaluate only a subset of attributes.
+- Or add per-class precision/recall into the CSV report.

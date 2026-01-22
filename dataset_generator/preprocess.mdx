@@ -1,0 +1,318 @@
+This small module provides **three utility functions** used during preprocessing:
+
+- `save_csv` – save a pandas DataFrame to a CSV file safely  
+- `log_error` – log error messages to a file  
+- `deduplicate` – remove duplicate items based on their `"text"` field  
+
+I’ll go through it line by line and function by function.
+
+---
+
+## 1. Imports
+
+```python
+import pandas as pd
+import logging
+import os
+```
+
+- `pandas as pd`  
+  - Pandas is used to handle data tables (DataFrames).
+  - Here, it’s only needed in `save_csv`, which takes a DataFrame and writes it to disk.
+
+- `logging`  
+  - Python’s built-in logging module.
+  - `log_error` uses this to record error messages in a log file.
+
+- `os`  
+  - For filesystem operations, specifically:
+    - Creating directories (`os.makedirs`).
+    - Extracting directory path from a filename (`os.path.dirname`).
+
+---
+
+## 2. `save_csv` – saving a DataFrame safely
+
+```python
+def save_csv(df, path):
+    """Save DataFrame to CSV with UTF-8 encoding."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    df.to_csv(path, index=False, encoding='utf-8')
+    print(f"Saved CSV: {path}")
+```
+
+### Purpose
+
+- Take a **pandas DataFrame** and write it to a **CSV file**.
+- Ensure that the directory where the CSV will be saved **exists**, creating it if necessary.
+
+### Parameters
+
+- `df` – a pandas DataFrame you want to save.
+- `path` – full file path (including filename) where the CSV should be written, e.g. `"data/processed/train.csv"`.
+
+### Step by step
+
+1. **Ensure directory exists**
+
+   ```python
+   os.makedirs(os.path.dirname(path), exist_ok=True)
+   ```
+
+   - `os.path.dirname(path)`:
+     - Extracts the directory part of the path.
+     - Example:
+       - If `path = "data/processed/train.csv"`,
+       - `os.path.dirname(path)` → `"data/processed"`.
+
+   - `os.makedirs(..., exist_ok=True)`:
+     - Creates that folder and any missing parent directories.
+     - `exist_ok=True` means:
+       - If the folder already exists, do nothing (no error).
+
+   So this line ensures the save location directory is ready.
+
+2. **Write the DataFrame to CSV**
+
+   ```python
+   df.to_csv(path, index=False, encoding='utf-8')
+   ```
+
+   - `df.to_csv(path, ...)`:
+     - Writes the DataFrame `df` to a CSV file at `path`.
+
+   - `index=False`:
+     - Do not include the DataFrame index as an extra column in the CSV.
+     - You get only your actual columns, no extra “Unnamed: 0” column.
+
+   - `encoding='utf-8'`:
+     - Save the file with UTF‑8 encoding, ensuring it handles most text (including non-English) properly.
+
+3. **Print confirmation**
+
+   ```python
+   print(f"Saved CSV: {path}")
+   ```
+
+   - Prints a message to the console:
+     - `Saved CSV: data/processed/train.csv`
+   - Helpful when running scripts to see that the save was successful.
+
+Visually:
+
+```text
+DataFrame df
+   │
+   ├─> make sure directory for path exists
+   │
+   └─> df.to_csv(path) with UTF-8
+        │
+        ▼
+   CSV file on disk + console message
+```
+
+---
+
+## 3. `log_error` – log messages to a file
+
+```python
+def log_error(message, path="data/logs/errors.log"):
+    """Log errors to a file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    logging.basicConfig(filename=path, level=logging.ERROR)
+    logging.error(message)
+```
+
+### Purpose
+
+- Record error messages to a log file on disk, so you can inspect them later.
+- Defaults to writing to `"data/logs/errors.log"`.
+
+### Parameters
+
+- `message` – the text of the error to log.
+- `path` – where to write the log file. Default is `"data/logs/errors.log"`.
+
+### Step by step
+
+1. **Ensure log directory exists**
+
+   ```python
+   os.makedirs(os.path.dirname(path), exist_ok=True)
+   ```
+
+   - Similar to `save_csv`, it creates the folder containing the log file if it doesn’t exist.
+
+   Example:
+   - If `path = "data/logs/errors.log"`,
+   - `os.path.dirname(path)` → `"data/logs"`.
+   - `os.makedirs("data/logs", exist_ok=True)` ensures this directory exists.
+
+2. **Configure logging**
+
+   ```python
+   logging.basicConfig(filename=path, level=logging.ERROR)
+   ```
+
+   - Sets up the logging system to:
+     - Write to the file specified by `path`.
+     - Log messages at level `ERROR` and above.
+   - Note:
+     - `basicConfig` typically only has effect the **first time** it’s called in a process.  
+       Later calls may not reconfigure logging (in simple usage, this is often fine for a small script).
+
+3. **Write the error message**
+
+   ```python
+   logging.error(message)
+   ```
+
+   - Logs the given `message` as an error-level log entry.
+   - It will be appended to the log file.
+
+So calling:
+
+```python
+log_error("OCR failed on image_01.jpg")
+```
+
+will:
+
+- Make sure `data/logs` exists.
+- Open (or create) `data/logs/errors.log`.
+- Append a line containing your error message.
+
+---
+
+## 4. `deduplicate` – remove duplicate text entries
+
+```python
+def deduplicate(data_list):
+    """Remove duplicate text or image_name entries."""
+    seen_texts = set()
+    cleaned = []
+    for item in data_list:
+        if item["text"] not in seen_texts:
+            seen_texts.add(item["text"])
+            cleaned.append(item)
+    return cleaned
+```
+
+### Purpose
+
+- Given a list of items (e.g. samples), remove entries that have **duplicate `"text"`** content.
+- Keep only the **first occurrence** of each unique `"text"` value.
+
+Despite the comment mentioning “text or image_name”, the implementation only checks `"text"`.
+
+### Parameter
+
+- `data_list` – a list of dictionaries. Each dict represents a data sample and is expected to have at least a `"text"` key.
+
+Example input:
+
+```python
+data_list = [
+  {"image": "img1.jpg", "text": "hello world"},
+  {"image": "img2.jpg", "text": "buy now"},
+  {"image": "img3.jpg", "text": "hello world"},
+]
+```
+
+### Step by step
+
+1. Initialize tracking containers:
+
+   ```python
+   seen_texts = set()
+   cleaned = []
+   ```
+
+   - `seen_texts` – a set to keep track of which text strings have already been encountered.
+   - `cleaned` – a list that will hold only unique items.
+
+2. Loop through each item:
+
+   ```python
+   for item in data_list:
+       if item["text"] not in seen_texts:
+           seen_texts.add(item["text"])
+           cleaned.append(item)
+   ```
+
+   For each `item`:
+
+   - Check if `item["text"]` is **not** in `seen_texts`.
+
+   - If it’s new:
+     - Add it to `seen_texts`.
+     - Append the entire `item` to `cleaned`.
+
+   - If it’s already in `seen_texts`, **skip** this item (i.e., drop duplicates).
+
+3. Return the deduplicated list:
+
+   ```python
+   return cleaned
+   ```
+
+Using the earlier example:
+
+```python
+data_list = [
+  {"image": "img1.jpg", "text": "hello world"},
+  {"image": "img2.jpg", "text": "buy now"},
+  {"image": "img3.jpg", "text": "hello world"},
+]
+
+cleaned = deduplicate(data_list)
+```
+
+Result:
+
+```python
+cleaned = [
+  {"image": "img1.jpg", "text": "hello world"},
+  {"image": "img2.jpg", "text": "buy now"}
+]
+```
+
+- The second occurrence of `"hello world"` (img3) is removed.
+
+Visually:
+
+```text
+Input data_list
+   ├─ item1: text="hello world" → new → keep
+   ├─ item2: text="buy now"     → new → keep
+   └─ item3: text="hello world" → already seen → skip
+
+Output cleaned
+   ├─ item1
+   └─ item2
+```
+
+---
+
+## How this fits into the bigger pipeline
+
+- **`save_csv`** – used when you’ve built a DataFrame of processed samples (images, text, labels) and want to write it out to disk, e.g.:
+
+  ```python
+  from preprocessing.utils import save_csv
+  save_csv(df, "data/processed/train.csv")
+  ```
+
+- **`log_error`** – used in functions that might fail (like OCR or image reading) to record issues while still letting the pipeline continue:
+
+  ```python
+  from preprocessing.utils import log_error
+  try:
+      # something risky
+  except Exception as e:
+      log_error(f"Failed to process image {img_path}: {e}")
+  ```
+
+- **`deduplicate`** – used when you want to avoid training on many samples that have the same text (e.g., repeated ads, near-duplicates), by filtering out duplicates before saving/using them.
+
+If you want, I can show a short example that uses all three functions in a small mock preprocessing script.

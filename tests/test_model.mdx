@@ -1,0 +1,444 @@
+This file defines **unit tests for your model architecture (`FG_MFN`) itself**.  
+It checks two key things:
+
+1. In **multi‑attribute mode**, the model:
+   - Accepts image + text input
+   - Returns a dictionary with logits for **all attributes**
+   - The shapes of those outputs match the configured number of classes
+
+2. In **legacy mode** (old config style), the model:
+   - Still works
+   - Has at least a `"sentiment"` head with the correct shape
+
+I’ll explain it line by line and test by test.
+
+---
+
+## 1. Imports and path setup
+
+```python
+import unittest
+import torch
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from models.fg_mfn import FG_MFN, ATTRIBUTE_NAMES
+```
+
+- `import unittest`  
+  Python’s built-in testing framework. You use it to define test cases (classes) and test methods.
+
+- `import torch`  
+  Needed to create dummy tensors for images and text.
+
+- `import sys`, `import os`  
+  Used to adjust the Python module search path so that `models.fg_mfn` can be imported when running tests.
+
+- `sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))`  
+  This line modifies `sys.path` (where Python looks for modules) by adding the project’s parent directory of `tests/`.
+
+  Concretely:
+  - `os.path.dirname(__file__)` → path to this test file’s folder (likely `tests/`).
+  - `os.path.join(..., '..')` → goes one directory up (project root).
+  - `os.path.abspath(...)` → makes it an absolute path.
+  - `sys.path.append(...)` → adds that project root to the Python import path.
+
+  This makes `from models.fg_mfn import ...` work when the tests are run from different locations.
+
+- `from models.fg_mfn import FG_MFN, ATTRIBUTE_NAMES`  
+  Imports:
+  - `FG_MFN` – your multimodal model class.
+  - `ATTRIBUTE_NAMES` – the global list of attribute names (theme, sentiment, emotion, etc.) defined in `fg_mfn.py`.
+
+---
+
+## 2. Test case class
+
+```python
+class TestModel(unittest.TestCase):
+```
+
+- Defines a test case class called `TestModel`.
+- Inherits from `unittest.TestCase`, so any method inside it that starts with `test_` will be run as a test.
+
+---
+
+## 3. `setUp`: configure and build the model
+
+```python
+    def setUp(self):
+        # Multi-attribute config
+        self.cfg = {
+            "IMAGE_BACKBONE": "resnet50",
+            "TEXT_ENCODER": "bert-base-uncased",
+            "FUSION_TYPE": "concat",
+            "DROPOUT": 0.1,
+            "HIDDEN_DIM": 256,
+            "ATTRIBUTES": {
+                "theme": {"num_classes": 10, "labels": ["Food", "Fashion", "Tech", "Health", "Travel", "Finance", "Entertainment", "Sports", "Education", "Other"]},
+                "sentiment": {"num_classes": 3, "labels": ["Positive", "Negative", "Neutral"]},
+                "emotion": {"num_classes": 8, "labels": ["Excitement", "Trust", "Joy", "Fear", "Anger", "Sadness", "Surprise", "Anticipation"]},
+                "dominant_colour": {"num_classes": 10, "labels": ["Red", "Blue", "Green", "Yellow", "Orange", "Purple", "Black", "White", "Brown", "Multi"]},
+                "attention_score": {"num_classes": 3, "labels": ["High", "Medium", "Low"]},
+                "trust_safety": {"num_classes": 3, "labels": ["Safe", "Unsafe", "Questionable"]},
+                "target_audience": {"num_classes": 8, "labels": ["General", "Food Lovers", "Tech Enthusiasts", "Fashionistas", "Parents", "Professionals", "Fitness Enthusiasts", "Students"]},
+                "predicted_ctr": {"num_classes": 3, "labels": ["High", "Medium", "Low"]},
+                "likelihood_shares": {"num_classes": 3, "labels": ["High", "Medium", "Low"]}
+            }
+        }
+```
+
+- `setUp` is run **before each test method** in this class.
+
+Here, we define a **multi-attribute model configuration**:
+
+- `"IMAGE_BACKBONE": "resnet50"`  
+  - Use ResNet‑50 as the visual feature extractor.
+
+- `"TEXT_ENCODER": "bert-base-uncased"`  
+  - Use BERT base (uncased) as the text encoder.
+
+- `"FUSION_TYPE": "concat"`  
+  - Combine image features and text features by concatenating them.
+
+- `"DROPOUT": 0.1`  
+  - Dropout probability.
+
+- `"HIDDEN_DIM": 256`  
+  - Hidden dimension size for internal representation (smaller than production to keep tests fast).
+
+- `"ATTRIBUTES"` – a dict describing each attribute’s classification head:
+  - For each attribute (`"theme"`, `"sentiment"`, etc.):
+    - `"num_classes"` – number of classes in that head.
+    - `"labels"` – list of class names (only used for label mapping, not in this test).
+
+This mirrors the structure expected by `FG_MFN` and ensures that it will create classification heads for each attribute with the right output dimension.
+
+---
+
+```python
+        self.device = "cpu"  # Test on CPU for CI/local speed
+        self.model = FG_MFN(self.cfg).to(self.device)
+```
+
+- `self.device = "cpu"`  
+  - We explicitly test on CPU to make tests simple and compatible with CI pipelines that might not have a GPU.
+
+- `self.model = FG_MFN(self.cfg).to(self.device)`  
+  - Construct a model instance with the given configuration.
+  - Move it to CPU.
+
+So for each test:
+
+- You have a fresh `FG_MFN` model configured for **multi-attribute** classification.
+
+---
+
+## 4. Test 1: `test_forward_pass`
+
+```python
+    def test_forward_pass(self):
+        batch_size = 2
+```
+
+- This test verifies that:
+  - The model’s forward pass runs without error.
+  - It returns outputs for **all defined attributes**.
+  - Each output tensor has the correct shape: `[batch_size, num_classes_for_that_attribute]`.
+
+- `batch_size = 2`  
+  - We'll simulate a batch of 2 samples.
+
+---
+
+### 4.1 Create dummy inputs
+
+```python
+        # Dummy inputs
+        images = torch.randn(batch_size, 3, 224, 224).to(self.device)
+        texts = torch.randint(0, 1000, (batch_size, 64)).to(self.device)
+        attention_mask = torch.ones((batch_size, 64)).to(self.device)
+```
+
+- `images = torch.randn(batch_size, 3, 224, 224)`  
+  - Random tensor simulating 2 images:
+    - `3` channels (RGB),
+    - `224x224` pixels.
+  - `randn` gives random floats (Gaussian), but for testing shape only, that’s fine.
+
+- `texts = torch.randint(0, 1000, (batch_size, 64))`  
+  - Random integer token IDs between 0 and 999.
+  - Shape: `[2, 64]` – 2 samples, each with sequence length 64.
+  - This simulates tokenized text input.
+
+- `attention_mask = torch.ones((batch_size, 64))`  
+  - Mask of ones – meaning **all tokens are active** (no padding).
+  - Same shape as `texts`.
+
+- `.to(self.device)` moves each tensor to the CPU.
+
+---
+
+### 4.2 Run forward pass
+
+```python
+        outputs = self.model(images, texts, attention_mask=attention_mask)
+```
+
+- Calls `FG_MFN.forward` with:
+  - `image_tensor = images`,
+  - `text_tensor = texts`,
+  - `attention_mask = attention_mask`.
+
+The expected result:
+
+- `outputs` is a dictionary, with one key per attribute (e.g. `theme`, `sentiment`, etc.).
+- Each value `outputs[attr]` is a tensor of shape `[batch_size, num_classes_for_attr]`.
+
+---
+
+### 4.3 Check the output type
+
+```python
+        # Check that outputs is a dictionary
+        self.assertIsInstance(outputs, dict, "Output should be a dictionary")
+```
+
+- Verifies that the model returns a dictionary, as designed in `FG_MFN.forward`.
+
+If not, the test fails with:
+
+> "Output should be a dictionary"
+
+---
+
+### 4.4 Check that all expected attributes are present
+
+```python
+        # Check that all expected attributes are present
+        for attr in ATTRIBUTE_NAMES:
+            self.assertIn(attr, outputs, f"Output should contain {attr}")
+```
+
+- Loops over `ATTRIBUTE_NAMES` (imported from `fg_mfn.py`), which is the canonical list:
+
+  ```python
+  [
+    "theme", "sentiment", "emotion", "dominant_colour", "attention_score",
+    "trust_safety", "target_audience", "predicted_ctr", "likelihood_shares"
+  ]
+  ```
+
+- For each attribute name, it asserts:
+
+  ```python
+  self.assertIn(attr, outputs)
+  ```
+
+  - If any attribute is missing, test fails with, for example:
+
+    > "Output should contain sentiment"
+
+This verifies that:
+
+> Every attribute head requested in the config is actually created and returns logits.
+
+---
+
+### 4.5 Check shapes of each attribute head
+
+```python
+        # Check shapes for each attribute
+        for attr, logits in outputs.items():
+            expected_classes = self.cfg["ATTRIBUTES"][attr]["num_classes"]
+            self.assertEqual(logits.shape, (batch_size, expected_classes), 
+                           f"{attr} should have shape [batch, {expected_classes}]")
+```
+
+- Loops over each key-value pair in the outputs dictionary:
+  - `attr` – attribute name (e.g., `"sentiment"`).
+  - `logits` – tensor for that head, shape `[2, num_classes_for_attr]`.
+
+- `expected_classes = self.cfg["ATTRIBUTES"][attr]["num_classes"]`  
+  - Look up how many classes this attribute should have according to the test config.
+
+- `self.assertEqual(logits.shape, (batch_size, expected_classes), ...)`  
+  - Check that:
+    - Number of rows = `batch_size` (2).
+    - Number of columns = `expected_classes` (as defined in cfg).
+
+If any shape doesn’t match, test fails with a message like:
+
+> "sentiment should have shape [batch, 3]"
+
+This ensures that:
+
+> The output dimension of each head matches what was configured (no mismatch between config and model architecture).
+
+---
+
+## 5. Test 2: `test_backwards_compatibility`
+
+```python
+    def test_backwards_compatibility(self):
+        """Test that model works with legacy single-class config."""
+```
+
+- This test checks that the model behaves correctly with a **legacy (old-style) configuration**, where there is no `"ATTRIBUTES"` section, just a single `"NUM_CLASSES"` value.
+
+Legacy mode is supported in `FG_MFN.__init__` for backwards compatibility.
+
+---
+
+### 5.1 Define legacy config and build model
+
+```python
+        legacy_cfg = {
+            "IMAGE_BACKBONE": "resnet50",
+            "TEXT_ENCODER": "bert-base-uncased",
+            "FUSION_TYPE": "concat",
+            "NUM_CLASSES": 2,
+            "DROPOUT": 0.1,
+            "HIDDEN_DIM": 256
+        }
+        model = FG_MFN(legacy_cfg).to(self.device)
+```
+
+- `legacy_cfg` does **not** have `"ATTRIBUTES"`.
+
+Instead, it has:
+
+- `"NUM_CLASSES": 2` – meaning:
+  - We want a single classification head with 2 classes (e.g., binary sentiment).
+- `"IMAGE_BACKBONE"`, `"TEXT_ENCODER"`, `"FUSION_TYPE"`, `"DROPOUT"`, `"HIDDEN_DIM"`:
+  - Same as in the multi-attribute case.
+
+When `FG_MFN` sees no `"ATTRIBUTES"` key, it uses fallback logic:
+
+```python
+# in FG_MFN.__init__
+else:
+    # Backwards compatibility: single sentiment classifier
+    self.attribute_heads["sentiment"] = nn.Linear(cfg["HIDDEN_DIM"], cfg.get("NUM_CLASSES", 2))
+```
+
+So in this test, the model will have **only one** head, named `"sentiment"`, of size 2.
+
+- `model = FG_MFN(legacy_cfg).to(self.device)`:
+  - Create a new model instance with this legacy config.
+  - Still on CPU.
+
+---
+
+### 5.2 Dummy inputs and forward pass
+
+```python
+        batch_size = 2
+        images = torch.randn(batch_size, 3, 224, 224).to(self.device)
+        texts = torch.randint(0, 1000, (batch_size, 64)).to(self.device)
+        
+        outputs = model(images, texts)
+```
+
+- Same dummy inputs as before:
+  - 2 random “images”.
+  - 2 random “token sequences” of length 64.
+  - `attention_mask` is optional and omitted here (defaults to `None` in `FG_MFN.forward`).
+
+- `outputs = model(images, texts)`:
+  - Forward pass.
+  - Should return a dict with **at least** the `"sentiment"` head.
+
+---
+
+### 5.3 Assertions for legacy behavior
+
+```python
+        # Should have at least sentiment output
+        self.assertIn("sentiment", outputs)
+        self.assertEqual(outputs["sentiment"].shape, (batch_size, 2))
+```
+
+- `self.assertIn("sentiment", outputs)`:
+  - The outputs dict **must** have a key `"sentiment"`.
+
+- `self.assertEqual(outputs["sentiment"].shape, (batch_size, 2))`:
+  - The `"sentiment"` tensor must have shape `[2, 2]`:
+    - 2 samples (batch size).
+    - 2 classes (as per `"NUM_CLASSES": 2`).
+
+If either condition fails, it means the legacy mode is broken, and the test fails.
+
+This ensures:
+
+> Even if someone uses the old config format, `FG_MFN` still builds a usable model with a single sentiment head.
+
+---
+
+## 6. Test runner
+
+```python
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- If you run this file directly:
+
+  ```bash
+  python tests/test_model.py
+  ```
+
+  - `unittest.main()` will:
+    - Discover `TestModel`.
+    - For each `test_*` method:
+      - Call `setUp()`
+      - Then run the test method
+      - Then call `tearDown()` (not defined here, so inherited default does nothing)
+    - Print a summary (OK / FAIL).
+
+---
+
+## Visual overview
+
+Think of these tests as **sanity checks for the model’s structure** using fake data:
+
+### Test 1: Multi‑attribute model
+
+```text
+config with ATTRIBUTES →
+FG_MFN(cfg) →
+Forward pass with random (images + text) →
+outputs dict:
+  {
+    "theme":   [batch, 10],
+    "sentiment": [batch, 3],
+    "emotion": [batch, 8],
+    ...
+  }
+
+Asserts:
+  - outputs is a dict
+  - all ATTRIBUTE_NAMES are keys in outputs
+  - each outputs[attr] has shape [batch_size, num_classes_from_cfg]
+```
+
+### Test 2: Legacy model
+
+```text
+legacy_cfg with NUM_CLASSES=2 (no ATTRIBUTES) →
+FG_MFN(legacy_cfg) →
+Forward pass with random (images + text) →
+outputs dict:
+  {
+    "sentiment": [batch, 2]
+  }
+
+Asserts:
+  - "sentiment" is in outputs
+  - outputs["sentiment"].shape == [2, 2]
+```
+
+Together, these tests guarantee:
+
+- The model **matches its config** in terms of output dimensions.
+- Backwards compatibility is preserved.

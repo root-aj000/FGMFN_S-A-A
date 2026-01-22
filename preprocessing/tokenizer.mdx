@@ -1,0 +1,210 @@
+This file defines a **very small, focused text tokenizer** wrapper around BERT’s tokenizer.
+
+It’s like a stripped‑down version of the `tokenize_text` you had in `text_preprocessing.py`, returning only `input_ids` (no attention mask).
+
+---
+
+## 1. Import
+
+```python
+from transformers import BertTokenizer
+```
+
+- Imports the `BertTokenizer` class from Hugging Face’s `transformers` library.
+- This class knows:
+  - How to split text into BERT tokens (subwords).
+  - How to map tokens to integer IDs.
+  - How to add special tokens like `[CLS]` and `[SEP]`.
+
+---
+
+## 2. Initialize the BERT tokenizer
+
+```python
+# Initialize BERT tokenizer
+tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+```
+
+- Loads a **pretrained tokenizer configuration** for the model `"bert-base-uncased"`.
+
+What this means conceptually:
+
+- It downloads (or loads from cache) the vocabulary and rules BERT uses.
+- “Uncased” means it doesn’t distinguish uppercase vs lowercase:
+  - `"Hello"` and `"hello"` are treated as the same token.
+
+Once loaded, `tokenizer` can take a string and turn it into token IDs.
+
+---
+
+## 3. `tokenize_text` function
+
+```python
+def tokenize_text(text, max_length=128):
+    """Tokenize text using BERT tokenizer and return tensor of token ids."""
+```
+
+- This function:
+  - Takes a raw text string: `text`
+  - Optionally a `max_length` (default 128).
+  - Returns a **PyTorch tensor of token IDs** of fixed length `max_length`.
+
+It’s a light wrapper that standardizes:
+- Adding special tokens.
+- Padding.
+- Truncation.
+- Tensor conversion.
+
+---
+
+### 3.1 Call the tokenizer
+
+```python
+    encoding = tokenizer(
+        text,
+        add_special_tokens=True,
+        max_length=max_length,
+        padding="max_length",
+        truncation=True,
+        return_tensors="pt"
+    )
+```
+
+Let’s unpack each argument:
+
+- `text`  
+  The input string to tokenize, e.g. `"This is an example."`.
+
+- `add_special_tokens=True`  
+  BERT uses special tokens like:
+  - `[CLS]` at the beginning of the sequence.
+  - `[SEP]` at the end of the sequence.
+
+  With this = `True`, the tokenizer automatically adds them:
+
+  ```text
+  [CLS] this is an example . [SEP]
+  ```
+
+- `max_length=max_length`  
+  The target sequence length (default 128).  
+  The final `input_ids` will always have length exactly `max_length`.
+
+- `padding="max_length"`  
+  If the tokenized text is **shorter** than `max_length`, the tokenizer will:
+  - Add `[PAD]` tokens at the end.
+  - These `[PAD]` tokens have a special ID (usually 0) and are meant to be ignored by the model.
+
+Example:
+
+- Real tokens length (with specials): 10  
+- `max_length = 128`  
+- Result: first 10 tokens are real, last 118 are `[PAD]`.
+
+- `truncation=True`  
+  If the tokenized text is **longer** than `max_length`, the tokenizer will **cut off** tokens at the end so that:
+
+  ```text
+  len(token_ids) == max_length
+  ```
+
+- `return_tensors="pt"`  
+  Returns the result as **PyTorch tensors** (not lists or NumPy arrays).
+
+So after this line, `encoding` is a dictionary-like object containing keys such as:
+- `"input_ids"`   → shape `[1, max_length]`
+- `"attention_mask"` → shape `[1, max_length]`  
+  (even though you don’t use it here, it’s still created)
+
+The initial dimension `1` is the batch size (because we passed a single text).
+
+---
+
+### 3.2 Return `input_ids` as a 1D tensor
+
+```python
+    return encoding["input_ids"].squeeze(0)
+```
+
+- `encoding["input_ids"]` has shape `[1, max_length]` (batch size 1).
+- `.squeeze(0)` removes the first dimension of size 1, so you get a tensor of shape `[max_length]`.
+
+So if `max_length=128`, then:
+
+- Return type is a PyTorch tensor:
+  - Shape: `[128]`
+  - Dtype: `torch.long` (integer IDs; default from tokenizer)
+
+**Example shape:**
+
+```python
+ids = tokenize_text("hello world", max_length=8)
+# ids.shape == torch.Size([8])
+```
+
+The returned tensor might look something like:
+
+```text
+[ 101, 7592, 2088, 102, 0, 0, 0, 0 ]
+```
+
+- `101` – `[CLS]`
+- `7592` – `"hello"`
+- `2088` – `"world"`
+- `102` – `[SEP]`
+- `0` – `[PAD]`
+
+(Exact IDs depend on BERT’s vocabulary.)
+
+---
+
+## Comparison to `text_preprocessing.tokenize_text`
+
+In your other file (`text_preprocessing.py`), `tokenize_text` returned a dictionary:
+
+```python
+{
+  "input_ids": tensor([max_length]),
+  "attention_mask": tensor([max_length])
+}
+```
+
+Here, this simpler `tokenize_text` returns **only** the `input_ids` tensor (no attention mask):
+
+```python
+tensor([max_length])
+```
+
+So this version is useful when:
+
+- You don’t need an attention mask (e.g., simple models or older code).
+- Or you handle attention masks manually elsewhere.
+
+Whereas the other version is tailored for BERT usage that expects both IDs and masks.
+
+---
+
+## Visual flow
+
+For a single text input:
+
+```text
+Raw text: "This is an example."
+
+    │
+    ▼
+BERT tokenizer (with add_special_tokens, max_length=128, padding, truncation)
+    │
+    ▼
+encoding["input_ids"]: tensor of shape [1, 128]
+    │
+    ▼
+squeeze(0): remove batch dimension
+    │
+    ▼
+Return: tensor of shape [128] (token IDs)
+```
+
+This tensor is ready to be fed into a model that expects just `input_ids`.
+
+If you want, I can show a tiny runnable example (conceptual) of taking some text and what this function returns (e.g., first few IDs and how they map to tokens).

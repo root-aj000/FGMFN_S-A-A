@@ -1,0 +1,523 @@
+This file is a small **utility toolkit** that helps with:
+
+- Logging errors  
+- Saving data to CSV  
+- Extracting text from images (OCR)  
+- Removing duplicate images based on text  
+- Simple image augmentation (PIL + torchvision)  
+- Tokenizing text with any Hugging Face tokenizer
+
+I’ll walk through it section by section, line by line, in plain terms.
+
+---
+
+## 1. Imports
+
+```python
+import os
+import csv
+import logging
+from PIL import Image
+import pytesseract
+from torchvision import transforms
+from typing import List, Tuple
+from utils.path import LOG_DIR
+```
+
+- `import os`  
+  For file and directory operations (like `os.makedirs`, `os.path.join`).
+
+- `import csv`  
+  Python’s built‑in CSV library for reading/writing CSV files.
+
+- `import logging`  
+  For logging errors and messages to a file.
+
+- `from PIL import Image`  
+  From the Pillow library (PIL), imports the `Image` class for working with images (opening, manipulating, etc.).
+
+- `import pytesseract`  
+  Wrapper to the Tesseract OCR engine.  
+  `pytesseract.image_to_string` extracts text from images.
+
+- `from torchvision import transforms`  
+  Import image transformation utilities (such as flips, rotations, crops) from torchvision.
+
+- `from typing import List, Tuple`  
+  For type hints: `List[...]` and `Tuple[...]`.
+
+- `from utils.path import LOG_DIR`  
+  Imports a predefined directory path where logs should be stored.
+
+---
+
+## 2. Paths setup
+
+```python
+# ------------------ PATHS ------------------
+LOG_DIR = LOG_DIR
+os.makedirs(LOG_DIR, exist_ok=True)
+```
+
+- `LOG_DIR = LOG_DIR`  
+  This reassigns the imported `LOG_DIR` to a local variable with the same name.  
+  It doesn’t change the value, just makes it explicitly used in this module.
+
+- `os.makedirs(LOG_DIR, exist_ok=True)`  
+  Creates the log directory if it doesn’t already exist.
+  - `exist_ok=True` prevents an error if the directory already exists.
+
+Visually:
+
+> Ensure there is a folder where we can safely write log files.
+
+---
+
+## 3. Logging error helper
+
+```python
+# ------------------ LOGGING ------------------
+def log_error(message: str, path: str = os.path.join(LOG_DIR, "errors.log")):
+    logging.basicConfig(
+        filename=path,
+        level=logging.ERROR,
+        format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    logging.error(message)
+```
+
+### What `log_error` does:
+
+- It sets up logging (if not already set) and then writes an **ERROR** message to a log file.
+
+Parameters:
+
+- `message: str`  
+  The error message to log.
+
+- `path: str = os.path.join(LOG_DIR, "errors.log")`  
+  By default, the log file is `errors.log` inside the `LOG_DIR`.
+
+Inside:
+
+1. `logging.basicConfig(...)`  
+   - Configures the logging system:
+     - `filename=path` → where to write log messages.
+     - `level=logging.ERROR` → only log messages of level ERROR or higher.
+     - `format="%(asctime)s - %(levelname)s - %(message)s"`  
+       Each line in the log file will include:
+       - Timestamp
+       - Level (e.g., ERROR)
+       - The message itself.
+
+2. `logging.error(message)`  
+   - Writes the given message to the log file as an ERROR.
+
+Example log line might look like:
+
+```text
+2026-01-22 10:15:30,123 - ERROR - OCR failed: <some error message>
+```
+
+This function is used by other helpers in this file whenever something goes wrong.
+
+---
+
+## 4. CSV saving helper
+
+```python
+# ------------------ CSV ------------------
+def save_csv(data: List[dict], path: str, fieldnames: List[str]):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in data:
+                writer.writerow(row)
+    except Exception as e:
+        log_error(f"Failed to save CSV {path}: {str(e)}")
+```
+
+### Purpose
+
+- Save a list of dictionaries (`data`) into a CSV file at `path`.
+
+Parameters:
+
+- `data: List[dict]`  
+  Each dict represents one row in the CSV.  
+  Keys in each dict should match the `fieldnames`.
+
+- `path: str`  
+  Where to save the CSV file.
+
+- `fieldnames: List[str]`  
+  The ordered list of column names for the CSV.
+
+Steps:
+
+1. `os.makedirs(os.path.dirname(path), exist_ok=True)`  
+   - Ensure the directory where the CSV will be saved exists.
+
+2. `with open(path, mode="w", newline="", encoding="utf-8") as f:`  
+   - Open the file for writing (`"w"`), with UTF‑8 encoding.
+   - `newline=""` avoids extra blank lines on some platforms.
+
+3. `writer = csv.DictWriter(f, fieldnames=fieldnames)`  
+   - Creates a CSV writer that knows how to write rows from dictionaries using the specified `fieldnames` as columns.
+
+4. `writer.writeheader()`  
+   - Writes the header row (column names) to the CSV.
+
+5. Loop over data rows:
+
+   ```python
+   for row in data:
+       writer.writerow(row)
+   ```
+
+   - For each dictionary in `data`, write a row to the CSV.
+   - Missing keys will be blank; extra keys are ignored.
+
+6. If anything goes wrong (file permission error, bad path, etc.):
+
+   ```python
+   except Exception as e:
+       log_error(f"Failed to save CSV {path}: {str(e)}")
+   ```
+
+   - Catches the exception and logs an error message with details.
+
+Visually:
+
+> List of Python dicts → structured CSV file on disk, with error handling.
+
+---
+
+## 5. OCR: extract text from image
+
+```python
+# ------------------ OCR ------------------
+def extract_text_from_image(image: Image.Image) -> str:
+    try:
+        text = pytesseract.image_to_string(image)
+        return text.strip()
+    except Exception as e:
+        log_error(f"OCR failed: {str(e)}")
+        return ""
+```
+
+### Purpose
+
+- Given a PIL `Image`, use Tesseract OCR to extract any text visible in it.
+
+Parameters:
+
+- `image: Image.Image`  
+  A PIL image object.
+
+Steps:
+
+1. `text = pytesseract.image_to_string(image)`  
+   - Uses Tesseract to do OCR (Optical Character Recognition) on the image.
+   - Returns a raw string that might contain newlines, spaces, etc.
+
+2. `return text.strip()`  
+   - `.strip()` removes leading and trailing whitespace (including newlines).
+   - Returns the clean text.
+
+If something fails (e.g., Tesseract not installed correctly, bad image format):
+
+```python
+except Exception as e:
+    log_error(f"OCR failed: {str(e)}")
+    return ""
+```
+
+- Logs the error and returns an empty string.
+
+Visually:
+
+> Image (e.g., screenshot with text) → Tesseract → `"Detected text from the image"`.
+
+---
+
+## 6. Deduplicate images based on text
+
+```python
+# ------------------ Deduplication ------------------
+def deduplicate_images(text_list: List[str], image_list: List[Image.Image]) -> Tuple[List[str], List[Image.Image]]:
+    unique_texts = []
+    unique_images = []
+    seen_texts = set()
+    for text, img in zip(text_list, image_list):
+        if text not in seen_texts:
+            unique_texts.append(text)
+            unique_images.append(img)
+            seen_texts.add(text)
+    return unique_texts, unique_images
+```
+
+### Purpose
+
+- Remove **duplicate images** that have the **same text** (e.g., same OCR result).
+
+Parameters:
+
+- `text_list: List[str]`  
+  A list of texts (e.g., OCR outputs or captions), one per image.
+
+- `image_list: List[Image.Image]`  
+  A list of PIL images, same length as `text_list`.
+
+Steps:
+
+1. Initialize empty lists and a set:
+
+   ```python
+   unique_texts = []
+   unique_images = []
+   seen_texts = set()
+   ```
+
+   - `seen_texts` will track which text strings we’ve already encountered.
+
+2. Loop through both lists together:
+
+   ```python
+   for text, img in zip(text_list, image_list):
+   ```
+
+   - `zip` pairs up corresponding `text` and `img` entries.
+
+3. For each pair:
+
+   ```python
+   if text not in seen_texts:
+       unique_texts.append(text)
+       unique_images.append(img)
+       seen_texts.add(text)
+   ```
+
+   - If we haven’t seen this exact text before:
+     - Add the text to `unique_texts`.
+     - Add the image to `unique_images`.
+     - Record this text in `seen_texts`.
+
+   - If the text is already in `seen_texts`, skip it → effectively deduplicating by text.
+
+4. Return the filtered lists:
+
+   ```python
+   return unique_texts, unique_images
+   ```
+
+Visually:
+
+```text
+Input:
+ texts:  ["buy now", "sale 50%", "buy now"]
+ images: [img1,       img2,        img3    ]
+
+Loop:
+ - "buy now" not seen → keep (img1)
+ - "sale 50%" not seen → keep (img2)
+ - "buy now" seen → skip (img3)
+
+Result:
+ unique_texts:  ["buy now", "sale 50%"]
+ unique_images: [img1,       img2]
+```
+
+---
+
+## 7. Image augmentation with torchvision (PIL images)
+
+```python
+# ------------------ Image Augmentation ------------------
+def augment_image(image: Image.Image) -> Image.Image:
+    try:
+        augment_transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(degrees=10),
+            transforms.RandomResizedCrop(size=image.size[0], scale=(0.9,1.0))
+        ])
+        return augment_transform(image)
+    except Exception as e:
+        log_error(f"Image augmentation failed: {str(e)}")
+        return image
+```
+
+### Purpose
+
+- Apply random visual transformations to a PIL image to augment data.
+
+Parameters:
+
+- `image: Image.Image`  
+  A PIL image.
+
+Steps:
+
+1. Define a composed transform:
+
+   ```python
+   augment_transform = transforms.Compose([
+       transforms.RandomHorizontalFlip(p=0.5),
+       transforms.RandomRotation(degrees=10),
+       transforms.RandomResizedCrop(size=image.size[0], scale=(0.9,1.0))
+   ])
+   ```
+
+   - `transforms.Compose([...])`  
+     Chains several image transformations together.
+
+   Included transforms:
+
+   - `RandomHorizontalFlip(p=0.5)`  
+     - With 50% probability, flip the image left-right.
+     - Otherwise leave it as is.
+
+   - `RandomRotation(degrees=10)`  
+     - Randomly rotate the image by up to ±10 degrees.
+
+   - `RandomResizedCrop(size=image.size[0], scale=(0.9,1.0))`  
+     - Randomly crops a region of the image, then resizes it back to a square of size `image.size[0]`.
+     - `scale=(0.9, 1.0)` means the cropped area will contain between 90% and 100% of the original image area.
+     - `size=image.size[0]` implies a square output based on the original width/height (assuming the image is square or that using width is acceptable).
+
+2. Apply the transform:
+
+   ```python
+   return augment_transform(image)
+   ```
+
+   - The input PIL image is passed through the sequence of transforms, resulting in a new PIL image that is flipped/rotated/cropped randomly.
+
+3. Error handling:
+
+   ```python
+   except Exception as e:
+       log_error(f"Image augmentation failed: {str(e)}")
+       return image
+   ```
+
+   - If something goes wrong during augmentation, log the error and return the original image unchanged.
+
+Visually:
+
+> Original PIL image → maybe flip, rotate ±10°, crop and zoom a bit → augmented PIL image.
+
+---
+
+## 8. Tokenization helper (generic)
+
+```python
+# ------------------ Tokenization Helper ------------------
+def tokenize_text(text: str, tokenizer, max_len: int = 128):
+    try:
+        encoding = tokenizer(
+            text,
+            truncation=True,
+            padding="max_length",
+            max_length=max_len,
+            return_tensors="pt"
+        )
+        return encoding["input_ids"].squeeze(0)
+    except Exception as e:
+        log_error(f"Text tokenization failed: {str(e)}")
+        return None
+```
+
+### Purpose
+
+- A small helper to tokenize text using any Hugging Face-style tokenizer (passed in), returning **only the `input_ids` tensor**.
+
+Parameters:
+
+- `text: str`  
+  The text to tokenize.
+
+- `tokenizer`  
+  A tokenizer object (e.g., `BertTokenizer.from_pretrained(...)`).
+
+- `max_len: int = 128`  
+  Maximum sequence length.
+
+Steps:
+
+1. Call the tokenizer:
+
+   ```python
+   encoding = tokenizer(
+       text,
+       truncation=True,
+       padding="max_length",
+       max_length=max_len,
+       return_tensors="pt"
+   )
+   ```
+
+   - `truncation=True`  
+     Cut off tokens that exceed `max_len`.
+
+   - `padding="max_length"`  
+     Pad sequences shorter than `max_len` with `[PAD]` tokens.
+
+   - `max_length=max_len`  
+     Fixed length for sequences.
+
+   - `return_tensors="pt"`  
+     Return PyTorch tensors.
+
+   Result: `encoding` has keys like `"input_ids"`, `"attention_mask"`, each of shape `[1, max_len]`.
+
+2. Return `input_ids` only:
+
+   ```python
+   return encoding["input_ids"].squeeze(0)
+   ```
+
+   - `encoding["input_ids"]`: shape `[1, max_len]`.
+   - `.squeeze(0)`: removes the batch dimension → shape `[max_len]`.
+
+3. Error handling:
+
+   ```python
+   except Exception as e:
+       log_error(f"Text tokenization failed: {str(e)}")
+       return None
+   ```
+
+   - If something goes wrong (e.g., invalid tokenizer, non-string text), log the error and return `None`.
+
+Visually:
+
+```text
+Input: "some text here"
+    │
+    ▼
+tokenizer(... truncation, padding, max_len, return_tensors="pt")
+    │
+    ▼
+encoding["input_ids"]: tensor of shape [1, max_len]
+    │
+    ▼
+squeeze(0)
+    │
+    ▼
+tensor of shape [max_len]
+```
+
+This is similar to the other `tokenize_text` you have, but:
+
+- It’s more generic (tokenizer passed as argument).
+- It doesn’t return `attention_mask`, only `input_ids`.
+
+---
+
+If you want, I can next:
+
+- Show how this utility file might be used in a realistic pipeline (e.g., reading raw images, doing OCR, deduplicating, augmenting, saving results to CSV).
+- Or help you refactor to avoid name collisions between this `augment_image` and the OpenCV-based one in `preprocessing/augmentation.py`.

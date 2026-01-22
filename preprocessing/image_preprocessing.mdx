@@ -1,0 +1,283 @@
+This file defines **how raw images are turned into model-ready tensors**:  
+- First resizing them  
+- Then normalizing them the way pretrained CNNs (like ResNet) expect.
+
+I’ll explain each part slowly and visually.
+
+---
+
+## 1. Imports
+
+```python
+import cv2
+import numpy as np
+import torch
+from preprocessing.augmentation import augment_image
+```
+
+- `cv2` – OpenCV, for image operations (resizing, reading, etc.).
+- `numpy as np` – core numerical array library; images are usually NumPy arrays.
+- `torch` – PyTorch, for creating tensors used by neural networks.
+- `augment_image` – imported but not actually used in this file (could be used elsewhere if needed).
+
+---
+
+## 2. Configuration constants
+
+```python
+# Config
+IMAGE_SIZE = (224, 224)
+NORMALIZE_MEAN = [0.485, 0.456, 0.406]
+NORMALIZE_STD = [0.229, 0.224, 0.225]
+```
+
+### `IMAGE_SIZE = (224, 224)`
+
+- Target image size: **224×224 pixels**.
+- Many CNN backbones (e.g., ResNet-50) are typically trained on 224×224 images.
+- We will resize all images to this size so they can be fed into those models.
+
+Think:
+
+> No matter what size the original image is, we shrink/expand it to 224×224.
+
+---
+
+### `NORMALIZE_MEAN` and `NORMALIZE_STD`
+
+```python
+NORMALIZE_MEAN = [0.485, 0.456, 0.406]
+NORMALIZE_STD = [0.229, 0.224, 0.225]
+```
+
+These are the **mean** and **standard deviation** values used to normalize images for common pretrained CNNs (like ImageNet-trained ResNet):
+
+- They are per color channel (R, G, B):
+  - Mean:
+    - R: 0.485
+    - G: 0.456
+    - B: 0.406
+  - Std:
+    - R: 0.229
+    - G: 0.224
+    - B: 0.225
+
+Purpose:
+
+> Pretrained models expect inputs that have been normalized with *these exact statistics*, because that’s how they were trained.  
+> Feeding images normalized this way makes your images “look” like the training data the model originally saw.
+
+---
+
+## 3. `resize_image` function
+
+```python
+def resize_image(image, size=IMAGE_SIZE):
+    """Resize image to fixed size."""
+    return cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+```
+
+### What it does:
+
+- Input:
+  - `image`: a NumPy array representing an image, shape something like `(H, W, 3)`.
+  - `size`: target size (default is `(224, 224)`).
+- Output:
+  - A resized image with shape `(224, 224, 3)` (or whatever `size` is).
+
+### How:
+
+- `cv2.resize(image, size, interpolation=cv2.INTER_AREA)`:
+  - `image`: the original image.
+  - `size`: target width and height (OpenCV uses `(width, height)`).
+  - `interpolation=cv2.INTER_AREA`: a method good for shrinking images (reduces aliasing).
+
+Visually:
+
+```text
+Original image: maybe 1024x768
+     │
+     ▼
+resize_image(...)
+     │
+     ▼
+Resized image: 224x224
+```
+
+All images become the same fixed size so the CNN can process them in batches.
+
+---
+
+## 4. `normalize_image` function
+
+```python
+def normalize_image(image):
+    """Normalize image to [0,1] and apply mean/std for pretrained CNNs."""
+    image = image.astype(np.float32) / 255.0
+    # Convert HWC to CHW
+    image = np.transpose(image, (2, 0, 1))
+    # Normalize
+    image = (image - np.array(NORMALIZE_MEAN)[:, None, None]) / np.array(NORMALIZE_STD)[:, None, None]
+    return torch.tensor(image, dtype=torch.float)
+```
+
+This is the most important function for turning an input image into a **PyTorch tensor in the exact format your model expects**.
+
+Let’s break it into steps.
+
+---
+
+### 4.1 Convert pixel values to float and scale to [0,1]
+
+```python
+    image = image.astype(np.float32) / 255.0
+```
+
+- `image.astype(np.float32)`  
+  Ensures the image is 32-bit floating point.  
+  Originally, OpenCV images are typically `uint8` with values 0–255.
+
+- `/ 255.0`  
+  Divides every pixel channel value by 255, so they become in range **[0, 1]**:
+  - 0   → 0.0
+  - 255 → 1.0
+  - 128 → ~0.502
+
+Visually:
+
+```text
+Raw image (uint8): 0..255
+     │
+     ▼
+Float32 image: 0.0..1.0
+```
+
+Many models are trained with pixel intensities in [0,1] before further normalization.
+
+---
+
+### 4.2 Rearrange dimensions: HWC → CHW
+
+```python
+    # Convert HWC to CHW
+    image = np.transpose(image, (2, 0, 1))
+```
+
+Images are typically stored as:
+
+- HWC: **Height, Width, Channels**  
+  shape like `(H, W, 3)`.
+
+PyTorch convolutional layers expect:
+
+- CHW: **Channels, Height, Width**  
+  shape like `(3, H, W)`.
+
+`np.transpose(image, (2, 0, 1))`:
+
+- Reorders the axes:
+  - Old axis 2 (channels) becomes axis 0.
+  - Old axis 0 (height) becomes axis 1.
+  - Old axis 1 (width) becomes axis 2.
+
+So:
+
+```text
+Before: (H, W, C)
+After:  (C, H, W)
+```
+
+For a 224×224 color image:
+
+- Before: `(224, 224, 3)`
+- After: `(3, 224, 224)`
+
+Visually:
+
+```text
+[height][width][RGB]  →  [RGB][height][width]
+```
+
+---
+
+### 4.3 Channel-wise normalization using mean and std
+
+```python
+    # Normalize
+    image = (image - np.array(NORMALIZE_MEAN)[:, None, None]) / np.array(NORMALIZE_STD)[:, None, None]
+```
+
+This line does the **per-channel normalization**:
+
+- `np.array(NORMALIZE_MEAN)[:, None, None]`:
+  - Turns the list `[0.485, 0.456, 0.406]` into a NumPy array of shape `(3, 1, 1)`.
+- `np.array(NORMALIZE_STD)[:, None, None]`:
+  - Similarly, shape `(3, 1, 1)`.
+
+Because `image` is `(3, H, W)`, NumPy broadcasting allows us to:
+
+- Subtract the mean from each channel.
+- Divide by the std for that channel.
+
+Mathematically, for each channel `c` at position `(i, j)`:
+
+```text
+image[c, i, j] = (image[c, i, j] - NORMALIZE_MEAN[c]) / NORMALIZE_STD[c]
+```
+
+So, for each of R, G, B channels:
+
+1. Subtract its specific mean.
+2. Divide by its specific standard deviation.
+
+Effect:
+
+> The distribution (statistics) of the pixels matches what the pretrained CNN expects (like it saw during training).
+
+After this step, pixel values are no longer in [0,1]; they’re typically centered around 0, with values maybe in [-2, +2] or so.
+
+---
+
+### 4.4 Convert NumPy array to PyTorch tensor
+
+```python
+    return torch.tensor(image, dtype=torch.float)
+```
+
+- Wraps the final normalized, channel-first array into a PyTorch `Tensor` with `float32` dtype.
+
+This is the exact type and shape that your `VisualModule` (ResNet-based) is ready to process.
+
+Final shape & type:
+
+- Shape: `(3, 224, 224)` if IMAGE_SIZE is `(224,224)`.
+- Type: `torch.FloatTensor`.
+
+---
+
+## End-to-end picture
+
+If you pass a raw image through `resize_image` and `normalize_image`, here’s what happens:
+
+1. **resize_image(image)**  
+   - Input:  raw image, shape `(H0, W0, 3)`, values 0..255.  
+   - Output: resized image, shape `(224, 224, 3)`, still values 0..255.
+
+2. **normalize_image(resized_image)**  
+   - Step 1: cast to float and divide by 255 → values [0, 1].
+   - Step 2: transpose to `(3, 224, 224)`.
+   - Step 3: subtract channel means, divide by channel stds.
+   - Step 4: convert to PyTorch tensor.
+
+So the typical pipeline you use is:
+
+```python
+img = cv2.imread(path)         # BGR, uint8, HxWx3
+img = resize_image(img)        # resize to 224x224
+img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # somewhere else you convert to RGB
+img_tensor = normalize_image(img)  # -> torch.FloatTensor, shape [3,224,224], normalized
+```
+
+That `img_tensor` is exactly what your `VisualModule` and then `FG_MFN` expect as input.
+
+If you want, I can next show how this ties together in a small example: reading an image from disk, running it through `normalize_image`, and feeding it into the `VisualModule`.

@@ -1,0 +1,331 @@
+This test file verifies that your **FastAPI app** works as expected from the outside:
+
+- `/health` returns a simple status JSON  
+- `/predict` accepts an uploaded image and returns a prediction with the correct structure
+
+It does this using FastAPI’s `TestClient`, and a temporary dummy image.
+
+I’ll walk through it section by section.
+
+---
+
+## 1. Imports
+
+```python
+import unittest
+import os
+import io
+from fastapi.testclient import TestClient
+from server.app import app
+from tests.test_utils import create_dummy_image
+import shutil
+```
+
+- `unittest` – Python’s built-in testing framework.
+
+- `os` – file paths and directory operations.
+
+- `io` – imported but not actually used here (you could remove it; not harmful).
+
+- `from fastapi.testclient import TestClient`  
+  - `TestClient` is a helper provided by FastAPI/Starlette to test the API endpoints without running a real server.  
+  - It lets you do things like `client.get("/path")` or `client.post("/predict", ...)`.
+
+- `from server.app import app`  
+  - Imports your FastAPI app instance defined in `server/app.py`.
+
+- `from tests.test_utils import create_dummy_image`  
+  - Helper function that creates a simple valid image file (e.g., with some text on a white background) at a given path.
+
+- `import shutil`  
+  - For removing directories recursively (`shutil.rmtree`).
+
+---
+
+## 2. Test case class
+
+```python
+class TestAPI(unittest.TestCase):
+```
+
+- Defines a test case called `TestAPI`, inheriting from `unittest.TestCase`.
+
+- Every method starting with `test_` inside this class will be run automatically as a separate test.
+
+---
+
+## 3. `setUp`: prepare TestClient and a dummy image
+
+```python
+    def setUp(self):
+        self.client = TestClient(app)
+        self.test_dir = "tests/temp_api"
+        os.makedirs(self.test_dir, exist_ok=True)
+        
+        # Create a dummy image
+        self.img_path = os.path.join(self.test_dir, "test_api.jpg")
+        create_dummy_image(self.img_path)
+```
+
+- `setUp` runs **before each test method**.
+
+Steps:
+
+1. `self.client = TestClient(app)`  
+   - Wraps your FastAPI `app` in a `TestClient`.
+   - You can now simulate HTTP requests against your API:
+     - `self.client.get("/health")`
+     - `self.client.post("/predict", ...)`, etc.
+
+2. `self.test_dir = "tests/temp_api"`  
+   - Directory to hold temporary files created during this test (like the dummy image).
+
+3. `os.makedirs(self.test_dir, exist_ok=True)`  
+   - Ensures that `tests/temp_api` exists.  
+   - `exist_ok=True` prevents an error if it already exists.
+
+4. Create a dummy image:
+
+   ```python
+   self.img_path = os.path.join(self.test_dir, "test_api.jpg")
+   create_dummy_image(self.img_path)
+   ```
+
+   - `self.img_path` is now something like `tests/temp_api/test_api.jpg`.
+   - `create_dummy_image(self.img_path)` writes a valid JPG to that path.
+
+So after `setUp`:
+
+- You have a `TestClient` ready.
+- You have a temporary directory for this test.
+- Inside it, there is a valid test image file `test_api.jpg`.
+
+---
+
+## 4. `tearDown`: clean up temp directory
+
+```python
+    def tearDown(self):
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
+```
+
+- `tearDown` runs **after each test method**, even if the test fails.
+
+- If the `tests/temp_api` directory exists, delete it entirely (`shutil.rmtree`).
+
+This ensures:
+
+- No leftover test files remain on disk between runs.
+
+---
+
+## 5. Test: `/health` endpoint
+
+```python
+    def test_health_check(self):
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ok", "message": "API is running"})
+```
+
+This test checks:
+
+1. That the `/health` endpoint is reachable.
+2. It returns the correct status code (`200`) and JSON body.
+
+Step by step:
+
+- `response = self.client.get("/health")`  
+  - Simulates a GET request to `http://testserver/health` using the TestClient.
+
+- `self.assertEqual(response.status_code, 200)`  
+  - Asserts that the HTTP status is 200 OK.
+
+- `self.assertEqual(response.json(), {"status": "ok", "message": "API is running"})`  
+  - Ensures the JSON response is exactly:
+
+    ```json
+    {
+      "status": "ok",
+      "message": "API is running"
+    }
+    ```
+
+If anything is different (status code or JSON), this test will fail, signaling that the health check endpoint is not behaving as expected.
+
+---
+
+## 6. Test: `/predict` endpoint
+
+```python
+    def test_predict_endpoint(self):
+        # Open the image in binary mode
+        with open(self.img_path, "rb") as f:
+            # Prepare file upload
+            files = {"files": ("test_api.jpg", f, "image/jpeg")}
+            response = self.client.post("/predict", files=files)
+```
+
+This test verifies that:
+
+- The `/predict` endpoint:
+  - Accepts an uploaded image.
+  - Returns a 200 response.
+  - Returns JSON with a `"predictions"` list.
+  - Each prediction has the expected keys (including the original filename).
+
+Step by step:
+
+1. `with open(self.img_path, "rb") as f:`  
+   - Opens the dummy image file in **binary mode** (`"rb"`).
+   - `f` is a file object pointing to the image data.
+
+2. `files = {"files": ("test_api.jpg", f, "image/jpeg")}`  
+   - Constructs a `files` dictionary in the format that `TestClient.post` expects for multipart file uploads:
+     - Key: `"files"` – matches the parameter name in your FastAPI endpoint:
+
+       ```python
+       async def predict_endpoint(files: List[UploadFile] = File(...)):
+       ```
+
+     - Value: a tuple:
+       - `"test_api.jpg"` – filename that will be seen by the server.
+       - `f` – file object.
+       - `"image/jpeg"` – MIME type.
+
+   - This simulates the client uploading one file in a field called `files`.
+
+3. `response = self.client.post("/predict", files=files)`  
+   - Sends a POST request to `/predict` with the image file attached.
+
+   Under the hood, FastAPI does:
+   - Read the uploaded file.
+   - Save it temporarily.
+   - Open it as a PIL image.
+   - Call your `predict` function (server/predict.py).
+   - Return a JSON with predictions.
+
+---
+
+### 6.1 Check response code
+
+```python
+        self.assertEqual(response.status_code, 200)
+```
+
+- Ensures the server returned HTTP 200 OK.
+- If prediction fails (e.g., model crash, missing config, etc.), status might be 500 or something else, and the test fails.
+
+---
+
+### 6.2 Check response structure
+
+```python
+        data = response.json()
+        self.assertIn("predictions", data)
+        self.assertTrue(len(data["predictions"]) > 0)
+```
+
+- `data = response.json()`  
+  - Parse the response body as JSON (FastAPI’s TestClient returns a Response compatible with `requests`).
+
+- `self.assertIn("predictions", data)`  
+  - The top-level JSON must have a key `"predictions"`.
+
+- `self.assertTrue(len(data["predictions"]) > 0)`  
+  - `"predictions"` should be a non-empty list.
+
+Given your API code, a successful `/predict` response looks like:
+
+```json
+{
+  "predictions": [
+    {
+      "filename": "test_api.jpg",
+      "predicted_label_text": "...",
+      "predicted_label_num": ...,
+      "confidence_score": ...,
+      "ocr_text": "...",
+      ...
+    }
+  ]
+}
+```
+
+This part of the test ensures at least that outer shape is correct.
+
+---
+
+### 6.3 Inspect first prediction entry
+
+```python
+        pred = data["predictions"][0]
+        self.assertIn("filename", pred)
+        self.assertIn("predicted_label_text", pred)
+        self.assertIn("confidence_score", pred)
+        self.assertEqual(pred["filename"], "test_api.jpg")
+```
+
+- `pred = data["predictions"][0]`  
+  - Take the first prediction dictionary in the list.
+
+Checks:
+
+- `self.assertIn("filename", pred)`  
+  - Must have `"filename"` – the original filename from the upload.
+
+- `self.assertIn("predicted_label_text", pred)`  
+  - Must have `"predicted_label_text"` – human-readable label (e.g., `"positive"`).
+
+- `self.assertIn("confidence_score", pred)`  
+  - Must have `"confidence_score"` – numeric confidence.
+
+- `self.assertEqual(pred["filename"], "test_api.jpg")`  
+  - The filename returned should exactly match the uploaded filename (not the internal UUID-based name used for temp storage).
+
+If any of these keys are missing or mismatched, the test fails, which would indicate that:
+
+- The API contract is not being respected.
+- Or your prediction pipeline changed and the response shape is no longer what clients expect.
+
+---
+
+## 7. Test runner
+
+```python
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- If this file is executed directly (`python tests/test_api.py`), Python’s unittest runner starts, runs:
+
+  - `setUp` → `test_health_check` → `tearDown`
+  - `setUp` → `test_predict_endpoint` → `tearDown`
+
+  and prints the results.
+
+---
+
+## Big-picture summary
+
+This test suite acts like a **client of your API**, checking it from the outside:
+
+1. `/health` endpoint:
+   - Is reachable.
+   - Returns `{ "status": "ok", "message": "API is running" }`.
+
+2. `/predict` endpoint:
+   - Accepts an uploaded image file as `files`.
+   - Returns status 200.
+   - Returns JSON with:
+     - A `"predictions"` list.
+     - For each prediction (at least the first one):
+       - `"filename"` matches the uploaded file name.
+       - `"predicted_label_text"` is present.
+       - `"confidence_score"` is present.
+
+If you want, you could extend this test by:
+
+- Patching `server.predict.extract_text` as in your other test, to avoid depending on the full OCR stack.
+- Verifying additional keys in each prediction (e.g. `"ocr_text"`, attribute-specific fields like `"sentiment"`).

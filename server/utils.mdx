@@ -1,0 +1,208 @@
+This file is a small helper for **OCR (reading text from images)** with basic **error logging**.
+
+I’ll walk through it from top to bottom in plain language.
+
+---
+
+## 1. Imports
+
+```python
+import os
+import logging
+from PIL import Image
+import pytesseract
+from utils.path import LOG_DIR
+```
+
+- `import os`  
+  Used for filesystem tasks like creating directories.
+
+- `import logging`  
+  Python’s built-in logging module; used to write error messages to a log file.
+
+- `from PIL import Image`  
+  From the Pillow library, imports the `Image` class for working with images.
+
+- `import pytesseract`  
+  Python wrapper around the Tesseract OCR engine.  
+  It can convert an image into text with `pytesseract.image_to_string(...)`.
+
+- `from utils.path import LOG_DIR`  
+  Imports a predefined directory path where log files should be stored.
+
+---
+
+## 2. Paths setup
+
+```python
+# ------------------ PATHS ------------------
+LOG_DIR = LOG_DIR
+os.makedirs(LOG_DIR, exist_ok=True)
+```
+
+- `LOG_DIR = LOG_DIR`  
+  Reassigns the imported `LOG_DIR` to a local variable with the same name.  
+  Functionally, this does nothing new; it just makes it explicit that this module uses that path.
+
+- `os.makedirs(LOG_DIR, exist_ok=True)`  
+  Ensures that the directory given by `LOG_DIR` exists.  
+  - If it doesn’t exist, it will be created.
+  - If it does exist, `exist_ok=True` prevents an error.
+
+Visually:
+
+> “Make sure we have a folder ready where we can write log files.”
+
+---
+
+## 3. Error logging helper
+
+```python
+# ------------------ LOGGING ------------------
+def log_error(message: str, path: str = os.path.join(LOG_DIR, "server_errors.log")):
+    logging.basicConfig(
+        filename=path,
+        level=logging.ERROR,
+        format="%(asctime)s - %(levelname)s - %(message)s"
+    )
+    logging.error(message)
+```
+
+### Purpose
+
+- `log_error` is a convenience function to log error messages to a file.
+
+Parameters:
+
+- `message: str`  
+  The error message you want to record.
+
+- `path: str = os.path.join(LOG_DIR, "server_errors.log")`  
+  Default log file location:
+  - `server_errors.log` inside the `LOG_DIR` directory.
+
+Steps inside:
+
+1. **Configure logging (if not already configured)**
+
+   ```python
+   logging.basicConfig(
+       filename=path,
+       level=logging.ERROR,
+       format="%(asctime)s - %(levelname)s - %(message)s"
+   )
+   ```
+
+   - `filename=path`  
+     Logs will be written into `server_errors.log` in the log directory.
+
+   - `level=logging.ERROR`  
+     Only messages of level ERROR and above are recorded.
+
+   - `format="%(asctime)s - %(levelname)s - %(message)s"`  
+     Each log line will have:
+     - Timestamp
+     - Log level (e.g., ERROR)
+     - The actual message text
+
+   Example log line:
+
+   ```text
+   2026-01-22 12:34:56,789 - ERROR - OCR failed: some error message
+   ```
+
+2. **Write the error**
+
+   ```python
+   logging.error(message)
+   ```
+
+   - Records an error-level log entry with the provided `message`.
+
+So, `log_error("OCR failed: ...")` will append a line to the log file with timestamp and details.
+
+---
+
+## 4. OCR function: extract text from image
+
+```python
+# ------------------ OCR ------------------
+def extract_text(image: Image.Image) -> str:
+    try:
+        text = pytesseract.image_to_string(image)
+        return text.strip()
+    except Exception as e:
+        log_error(f"OCR failed: {str(e)}")
+        return ""
+```
+
+### Purpose
+
+- Given a PIL `Image` object, run OCR to extract text as a string.
+- If anything goes wrong, log the error and return an empty string.
+
+Parameters:
+
+- `image: Image.Image`  
+  A PIL image (already opened, not a file path).
+
+### Inside the `try` block
+
+```python
+    text = pytesseract.image_to_string(image)
+```
+
+- Calls Tesseract via `pytesseract` to read text from the image.
+- This returns a raw text string, which may include newlines, spaces, etc.
+
+```python
+    return text.strip()
+```
+
+- `.strip()` removes any leading or trailing whitespace and newlines.
+- The cleaned text is returned.
+
+Visually:
+
+> Image (screenshot, poster, flyer) → Tesseract → `"Some extracted text"`.
+
+### Error handling
+
+```python
+    except Exception as e:
+        log_error(f"OCR failed: {str(e)}")
+        return ""
+```
+
+- If anything raises an exception (e.g., Tesseract not installed, bad image format):
+  - It calls `log_error` with a message like `"OCR failed: <error details>"`.
+  - Then returns an empty string `""`.
+
+This way:
+
+- Your main code doesn’t crash due to OCR issues.
+- You still get a trace of what went wrong in the log file.
+
+---
+
+## Big-picture view
+
+This file provides:
+
+- A **logging function** to write error messages into a log file:
+  - `server_errors.log` in a known log directory.
+- A **simple OCR wrapper**:
+  - Input: PIL Image
+  - Output: cleaned text string, or `""` if OCR fails (with the error recorded).
+
+You might use it like:
+
+```python
+from ocr_module import extract_text
+
+img = Image.open("ad_screenshot.png")
+text = extract_text(img)
+print(text)  # Either the text found in the image, or empty string if error
+```
+
+If you want, I can show how this version compares to the PaddleX-based OCR pipeline you have in `server/predict.py` (pros/cons and where each might be used).

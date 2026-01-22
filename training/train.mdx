@@ -1,0 +1,838 @@
+This script is your **full training loop** for the multimodal model.  
+It handles:
+
+- Loading config and data  
+- Building the model  
+- Training + validation per epoch  
+- Logging to TensorBoard and CSV  
+- Learning‑rate scheduling  
+- Early stopping  
+- Saving best and last checkpoints
+
+I’ll go through it step by step.
+
+---
+
+## 1. Imports and config
+
+```python
+import os
+import sys
+import json
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from sklearn.metrics import accuracy_score, f1_score
+import numpy as np
+from tqdm import tqdm
+```
+
+- `os`, `sys` – system/file utilities.
+- `json` – read model configuration from a JSON file.
+- `torch`, `torch.nn as nn`, `torch.optim as optim` – PyTorch core, loss functions, optimizers.
+- `DataLoader` – for batching dataset samples.
+- `accuracy_score`, `f1_score` – to compute metrics during training and validation.
+- `numpy as np` – numerical utilities (averages, etc.).
+- `tqdm` – for nice progress bars over batches.
+
+```python
+from models.fg_mfn import FG_MFN, ATTRIBUTE_NAMES
+from training.logger import Logger
+from utils.path import TRAIN_CSV, VAL_CSV, SAVED_MODEL_DIR, MODEL_CONFIG
+from preprocessing.dataset import CustomDataset
+```
+
+- `FG_MFN`, `ATTRIBUTE_NAMES` – your multimodal model class and the list of possible attribute heads (theme, sentiment, etc.)
+- `Logger` – helper class logging metrics to TensorBoard and CSV.
+- Paths:
+  - `TRAIN_CSV` – CSV for training data.
+  - `VAL_CSV` – CSV for validation data.
+  - `SAVED_MODEL_DIR` – directory to store model checkpoints.
+  - `MODEL_CONFIG` – path to JSON config with model setup.
+- `CustomDataset` – dataset that turns each CSV row into tensors (image, text, labels).
+
+---
+
+## 2. Training hyperparameters and device
+
+```python
+# ------------------ CONFIG ------------------
+BATCH_SIZE = 32
+EPOCHS = 50
+LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 1e-5
+EARLY_STOPPING_PATIENCE = 5
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+RANDOM_SEED = 42
+```
+
+- `BATCH_SIZE = 32` – number of samples per training/validation batch.
+- `EPOCHS = 50` – maximum number of full passes through the training data.
+- `LEARNING_RATE = 1e-4` – base learning rate for optimizer.
+- `WEIGHT_DECAY = 1e-5` – L2 regularization strength (helps prevent overfitting).
+- `EARLY_STOPPING_PATIENCE = 5` – if validation loss doesn’t improve for 5 epochs in a row, stop training.
+- `DEVICE` – `"cuda"` if GPU is available, else `"cpu"`.
+- `RANDOM_SEED = 42` – seed for reproducibility.
+
+### Set random seeds
+
+```python
+torch.manual_seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
+if DEVICE == "cuda":
+    torch.cuda.manual_seed_all(RANDOM_SEED)
+```
+
+- Set PyTorch and NumPy seeds to fix the random behavior (initialization, shuffling, etc.).
+- If using GPU, also seed CUDA generators.
+
+This makes training more repeatable.
+
+---
+
+### Ensure model directory exists
+
+```python
+os.makedirs(SAVED_MODEL_DIR, exist_ok=True)
+```
+
+- Create the directory where model checkpoints will be stored.
+
+---
+
+## 3. Load model configuration
+
+```python
+# ------------------ LOAD MODEL CONFIG ------------------
+with open(MODEL_CONFIG, "r") as f:
+    cfg = json.load(f)
+```
+
+- Open the JSON file at `MODEL_CONFIG`.
+- Load it into a Python dict `cfg`.
+
+This config describes:
+
+- Backbones (image, text)
+- Hidden dimension
+- Dropout
+- Attribute definitions (labels, num_classes)
+- Etc.
+
+`cfg` is passed into `FG_MFN` when constructing the model.
+
+---
+
+## 4. Load datasets and dataloaders
+
+```python
+# ------------------ DATA ------------------
+train_dataset = CustomDataset(TRAIN_CSV)
+val_dataset = CustomDataset(VAL_CSV)
+
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+```
+
+- `train_dataset = CustomDataset(TRAIN_CSV)`:
+  - Reads training CSV.
+  - For each row: loads image, processes text, builds label(s).
+- `val_dataset = CustomDataset(VAL_CSV)` – same for validation data.
+
+`DataLoader` wraps each dataset:
+
+- `batch_size=BATCH_SIZE` – 32 samples per batch.
+- `shuffle=True` for training – randomizes order each epoch.
+- `shuffle=False` for validation – deterministic order.
+- `num_workers=4` – use 4 subprocesses to load data in parallel (speeds up input pipeline).
+
+---
+
+### Determine training mode: legacy vs multi-attribute
+
+```python
+# Determine which attributes are available for training
+available_attributes = train_dataset.available_attributes if hasattr(train_dataset, 'available_attributes') else []
+legacy_mode = train_dataset.legacy_mode if hasattr(train_dataset, 'legacy_mode') else True
+
+print(f"Training mode: {'legacy (single label)' if legacy_mode else 'multi-attribute'}")
+if not legacy_mode:
+    print(f"Available attributes: {available_attributes}")
+```
+
+- `CustomDataset` sets:
+  - `available_attributes` – which attribute columns (e.g., `sentiment_num`, `emotion_num`, ...) are present in this CSV.
+  - `legacy_mode` – True if only a single `label_num` column exists (old format).
+
+Here:
+
+- `available_attributes` – list of attribute names present (or empty if attribute-style columns not used).
+- `legacy_mode` – True → only single label per sample; False → multi-attribute.
+
+Print:
+
+- Whether you’re training in legacy single-label mode or multi-attribute mode.
+- If multi-attribute, which attributes are present.
+
+This influences how the loss is computed.
+
+---
+
+## 5. Build the model
+
+```python
+# ------------------ MODEL ------------------
+model = FG_MFN(cfg).to(DEVICE)
+```
+
+- Construct your multimodal model with the config `cfg`.
+- Move it to the selected device.
+
+Internally, `FG_MFN` creates:
+
+- A visual backbone (e.g., ResNet) → image features.
+- A text backbone (e.g., BERT) → text features.
+- A fusion layer and shared FC layer.
+- Separate heads for each configured attribute.
+
+---
+
+## 6. Loss function, optimizer, scheduler
+
+```python
+# ------------------ LOSS & OPTIMIZER ------------------
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.5)
+```
+
+- `criterion = nn.CrossEntropyLoss()`:
+  - Standard classification loss.
+  - Takes logits `[batch, num_classes]` and target labels `[batch]` (class indices).
+  - Computes average negative log likelihood.
+
+- `optimizer = optim.AdamW(...)`:
+  - AdamW optimizer with:
+    - `lr = 1e-4`
+    - `weight_decay = 1e-5`.
+  - Adam with decoupled weight decay is often good for transformers and CNNs.
+
+- `scheduler = ReduceLROnPlateau(...)`:
+  - Watches a metric (here you call `scheduler.step(val_loss)`).
+  - If `val_loss` doesn’t improve for `patience=3` epochs:
+    - Reduces learning rate by `factor=0.5` (halves it).
+  - `mode='min'` means “lower is better” (for loss).
+
+So:
+
+> If validation loss plateaus or worsens for 3 epochs, training slows down with a smaller LR.
+
+---
+
+## 7. Logger setup
+
+```python
+# ------------------ LOGGER ------------------
+LOG_DIR = os.path.join(SAVED_MODEL_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+logger = Logger(LOG_DIR)
+```
+
+- `LOG_DIR` – a `logs` subfolder inside the model save directory.
+- `os.makedirs(LOG_DIR, exist_ok=True)` – ensure it exists.
+
+- `logger = Logger(LOG_DIR)`:
+  - Creates a timestamped subdirectory inside `LOG_DIR`.
+  - Sets up:
+    - A TensorBoard writer.
+    - A `training_log.csv` file.
+
+During training, `logger.log_metrics(...)` will record metrics for each epoch.
+
+---
+
+## 8. Early stopping state
+
+```python
+# ------------------ EARLY STOPPING ------------------
+best_val_loss = np.inf
+patience_counter = 0
+```
+
+- `best_val_loss` – lowest validation loss seen so far. Initialized to infinity so any real loss is lower.
+- `patience_counter` – how many consecutive epochs without improvement.
+
+Used later in the main loop to decide when to stop.
+
+---
+
+## 9. Training epoch function
+
+```python
+def train_epoch(model, loader, criterion, optimizer, device, scaler=None):
+```
+
+Arguments:
+
+- `model` – FG_MFN instance.
+- `loader` – training DataLoader.
+- `criterion` – CrossEntropyLoss.
+- `optimizer` – AdamW.
+- `device` – 'cuda' or 'cpu'.
+- `scaler` – optional GradScaler for mixed precision (GPU only). If `None`, training is full precision.
+
+---
+
+### 9.1 Setup
+
+```python
+    model.train()
+    train_losses = []
+    all_preds = {attr: [] for attr in ATTRIBUTE_NAMES}
+    all_labels = {attr: [] for attr in ATTRIBUTE_NAMES}
+```
+
+- `model.train()` – set to training mode (enables dropout, etc.).
+- `train_losses` – list to store batch loss values.
+- `all_preds`/`all_labels` – dicts mapping each attribute name to a list of predictions/labels for metric computation.
+
+---
+
+### 9.2 Loop over batches
+
+```python
+    for batch in tqdm(loader, desc="Training", leave=False):
+```
+
+- Wraps the DataLoader in `tqdm` to show a progress bar labeled “Training”.
+
+Inside the loop, for each batch:
+
+```python
+        images = batch["visual"].to(device)
+        texts = batch["text"].to(device)
+        masks = batch["attention_mask"].to(device)
+```
+
+- Move image, text token IDs, and attention mask to the device.
+
+---
+
+#### 9.2.1 Zero gradients and forward pass (with optional mixed precision)
+
+```python
+        optimizer.zero_grad()
+        with torch.amp.autocast(device_type="cuda", enabled=(scaler is not None)):
+            outputs = model(images, texts, attention_mask=masks)
+```
+
+- `optimizer.zero_grad()` – clear gradient buffers from previous steps.
+
+- `with torch.amp.autocast(...)`:
+  - If `scaler` is not None (GPU mixed precision enabled):
+    - Runs model forward in automatic mixed precision (some ops in float16, some in float32) for speed and memory efficiency.
+  - If `scaler` is None:
+    - `enabled=False` → runs normally.
+
+- `outputs = model(...)`:
+  - `outputs` is a dict:
+    - Key: attribute name.
+    - Value: logits `[batch_size, num_classes]` for that attribute.
+
+---
+
+#### 9.2.2 Compute loss
+
+```python
+            # Compute multi-task loss
+            total_loss = 0
+            num_attrs = 0
+```
+
+- Initialize `total_loss` (scalar tensor) and `num_attrs` (count of attributes contributing to loss).
+
+##### Legacy mode (single label)
+
+```python
+            if legacy_mode:
+                # Backwards compatibility: single sentiment label
+                labels = (batch["label"] - 1).to(device)
+                if "sentiment" in outputs:
+                    loss = criterion(outputs["sentiment"], labels)
+                else:
+                    # Use first available head
+                    first_key = list(outputs.keys())[0]
+                    loss = criterion(outputs[first_key], labels)
+                total_loss = loss
+```
+
+- `labels = (batch["label"] - 1).to(device)`:
+  - `batch["label"]` are ground-truth class indices from the dataset.
+  - They subtract 1 (assuming original labels are 1‑based and need to become 0‑based).
+  - Move to device.
+
+- If the model has a `sentiment` head:
+  - `loss = criterion(outputs["sentiment"], labels)`
+- Otherwise:
+  - Use the first available head.
+
+- `total_loss = loss` – only one head contributes to loss in legacy mode.
+
+##### Multi-attribute mode
+
+```python
+            else:
+                # Multi-attribute loss
+                for attr in ATTRIBUTE_NAMES:
+                    if attr in outputs and attr in batch:
+                        labels = batch[attr].to(device)
+                        loss = criterion(outputs[attr], labels)
+                        total_loss += loss
+                        num_attrs += 1
+                        
+                        # Track predictions
+                        preds = torch.argmax(outputs[attr], dim=1).cpu().numpy()
+                        all_preds[attr].extend(preds)
+                        all_labels[attr].extend(labels.cpu().numpy())
+                
+                if num_attrs > 0:
+                    total_loss = total_loss / num_attrs  # Average loss
+```
+
+For each attribute:
+
+- If both:
+  - the model outputs that head (`attr in outputs`)
+  - the batch has ground-truth labels (`attr in batch`)
+
+Then:
+
+1. `labels = batch[attr].to(device)` – ground truth indices.
+2. `loss = criterion(outputs[attr], labels)` – CrossEntropy for this attribute.
+3. Add to `total_loss`.
+4. Increment `num_attrs`.
+
+Track predictions & labels for metrics:
+
+- `preds = torch.argmax(outputs[attr], dim=1)` – predicted class per sample.
+- Append to `all_preds[attr]`.
+- Append ground truths to `all_labels[attr]`.
+
+After the loop:
+
+- If at least one attribute was included:
+  - `total_loss = total_loss / num_attrs` – average loss across attributes.
+
+So:
+
+> In multi-attribute mode, you average the per-head cross-entropy losses.
+
+---
+
+#### 9.2.3 Backprop and optimizer step
+
+```python
+        if scaler:
+            scaler.scale(total_loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            total_loss.backward()
+            optimizer.step()
+```
+
+- If using mixed precision (`scaler` not None):
+  - `scaler.scale(total_loss).backward()` – scale the loss to maintain numerical stability, then backpropagate.
+  - `scaler.step(optimizer)` – perform an optimizer step with scaled gradients.
+  - `scaler.update()` – adjust scaling factor for next iteration.
+
+- Else (no mixed precision):
+  - Standard:
+    - `total_loss.backward()`
+    - `optimizer.step()`
+
+Then:
+
+```python
+        train_losses.append(total_loss.item())
+```
+
+- Record the numeric loss value (Python float) for this batch.
+
+---
+
+### 9.3 After all batches: compute averages and metrics
+
+```python
+    avg_loss = np.mean(train_losses)
+    
+    # Compute per-attribute metrics
+    metrics = {"loss": avg_loss}
+    for attr in ATTRIBUTE_NAMES:
+        if all_preds[attr]:
+            metrics[f"{attr}_acc"] = accuracy_score(all_labels[attr], all_preds[attr])
+            metrics[f"{attr}_f1"] = f1_score(all_labels[attr], all_preds[attr], average='weighted', zero_division=0)
+    
+    return metrics
+```
+
+- `avg_loss` – mean training loss over all batches.
+
+- `metrics = {"loss": avg_loss}` – start with loss.
+
+For each attribute:
+
+- If we collected predictions for it:
+  - `accuracy_score` – classification accuracy.
+  - `f1_score(..., average='weighted')` – F1 score, weighted by support (class frequency).
+  - `zero_division=0` – avoid errors for classes not predicted.
+
+Add them to metrics dict as:
+
+- `"{attr}_acc"` – e.g. `"sentiment_acc"`.
+- `"{attr}_f1"` – e.g. `"sentiment_f1"`.
+
+Return `metrics` for that epoch.
+
+---
+
+## 10. Validation epoch function
+
+```python
+def validate_epoch(model, loader, criterion, device):
+```
+
+Similar structure to `train_epoch`, but:
+
+- No gradients.
+- No optimizer step.
+- No mixed precision scaling.
+
+---
+
+### 10.1 Setup
+
+```python
+    model.eval()
+    val_losses = []
+    all_preds = {attr: [] for attr in ATTRIBUTE_NAMES}
+    all_labels = {attr: [] for attr in ATTRIBUTE_NAMES}
+```
+
+- `model.eval()` – evaluation mode (disables dropout, etc.).
+- `val_losses`, `all_preds`, `all_labels` as before.
+
+---
+
+### 10.2 Loop over validation batches
+
+```python
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Validation", leave=False):
+            images = batch["visual"].to(device)
+            texts = batch["text"].to(device)
+            masks = batch["attention_mask"].to(device)
+
+            outputs = model(images, texts, attention_mask=masks)
+```
+
+- `torch.no_grad()` – no gradient computation.
+- For each batch: move data to device, run model, get `outputs`.
+
+---
+
+### 10.3 Compute loss (same logic as training, but no backward)
+
+```python
+            # Compute multi-task loss
+            total_loss = 0
+            num_attrs = 0
+            
+            if legacy_mode:
+                labels = (batch["label"] - 1).to(device)
+                if "sentiment" in outputs:
+                    loss = criterion(outputs["sentiment"], labels)
+                else:
+                    first_key = list(outputs.keys())[0]
+                    loss = criterion(outputs[first_key], labels)
+                total_loss = loss
+            else:
+                for attr in ATTRIBUTE_NAMES:
+                    if attr in outputs and attr in batch:
+                        labels = batch[attr].to(device)
+                        loss = criterion(outputs[attr], labels)
+                        total_loss += loss
+                        num_attrs += 1
+                        
+                        preds = torch.argmax(outputs[attr], dim=1).cpu().numpy()
+                        all_preds[attr].extend(preds)
+                        all_labels[attr].extend(labels.cpu().numpy())
+                
+                if num_attrs > 0:
+                    total_loss = total_loss / num_attrs
+
+            val_losses.append(total_loss.item())
+```
+
+Same pattern as in `train_epoch`:
+
+- Legacy mode → single sentiment loss.
+- Multi-attribute mode → sum per-attribute losses, average if needed.
+- Also track predictions/labels in multi-attribute mode.
+
+Append each batch loss to `val_losses`.
+
+---
+
+### 10.4 Metrics
+
+```python
+    avg_loss = np.mean(val_losses)
+    
+    metrics = {"loss": avg_loss}
+    for attr in ATTRIBUTE_NAMES:
+        if all_preds[attr]:
+            metrics[f"{attr}_acc"] = accuracy_score(all_labels[attr], all_preds[attr])
+            metrics[f"{attr}_f1"] = f1_score(all_labels[attr], all_preds[attr], average='weighted', zero_division=0)
+    
+    return metrics
+```
+
+- `avg_loss` – mean validation loss.
+- `metrics` – dict with:
+  - `"loss"`
+  - Per-attribute `"{attr}_acc"` and `"{attr}_f1"` when data is available.
+
+Return for main loop.
+
+---
+
+## 11. Main training loop
+
+```python
+def main():
+    global best_val_loss, patience_counter
+    scaler = torch.cuda.amp.GradScaler("cuda") if DEVICE == "cuda" else None
+```
+
+- `global best_val_loss, patience_counter` – so we can modify the module-level early-stopping variables.
+
+- `scaler = torch.cuda.amp.GradScaler("cuda") if DEVICE == "cuda" else None`:
+  - If on GPU, use GradScaler for mixed precision training.
+  - If on CPU, `scaler = None` → no mixed precision.
+
+(Note: typical usage is `GradScaler()` without argument, but this line is conceptually: “enable AMP on CUDA”.)
+
+---
+
+### 11.1 Epoch loop
+
+```python
+    for epoch in range(1, EPOCHS + 1):
+        train_metrics = train_epoch(model, train_loader, criterion, optimizer, DEVICE, scaler)
+        val_metrics = validate_epoch(model, val_loader, criterion, DEVICE)
+```
+
+- Loop from epoch 1 to `EPOCHS` inclusive.
+
+Each epoch:
+
+- `train_metrics` – returned from `train_epoch`.
+- `val_metrics` – returned from `validate_epoch`.
+
+Both are dictionaries like:
+
+```python
+{
+  "loss": 0.5,
+  "sentiment_acc": 0.8,
+  "sentiment_f1": 0.79,
+  ...
+}
+```
+
+---
+
+### 11.2 Log metrics (TensorBoard + CSV)
+
+```python
+        # Log metrics
+        log_data = {}
+        for key, value in train_metrics.items():
+            log_data[f"train_{key}"] = value
+        for key, value in val_metrics.items():
+            log_data[f"val_{key}"] = value
+        logger.log_metrics(log_data, epoch)
+```
+
+- Build a `log_data` dict with:
+
+  - Keys prefixed by `"train_"` and `"val_"`.
+
+Example:
+
+```python
+train_metrics = {"loss": 0.5, "sentiment_acc": 0.8}
+val_metrics   = {"loss": 0.6, "sentiment_acc": 0.75}
+
+log_data = {
+  "train_loss": 0.5,
+  "train_sentiment_acc": 0.8,
+  "val_loss": 0.6,
+  "val_sentiment_acc": 0.75
+}
+```
+
+- `logger.log_metrics(log_data, epoch)`:
+  - Writes all these values to:
+    - TensorBoard (scalars).
+    - CSV (one row per epoch).
+
+---
+
+### 11.3 Print summary for the epoch
+
+```python
+        # Print summary
+        train_loss = train_metrics["loss"]
+        val_loss = val_metrics["loss"]
+        print(f"Epoch [{epoch}/{EPOCHS}] Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+```
+
+- Simple one-line summary.
+
+```python
+        # Print per-attribute accuracies
+        for attr in ATTRIBUTE_NAMES:
+            if f"{attr}_acc" in train_metrics:
+                print(f"  {attr}: Train Acc={train_metrics[f'{attr}_acc']:.3f}, Val Acc={val_metrics.get(f'{attr}_acc', 0):.3f}")
+```
+
+- For each attribute that has accuracy metrics:
+  - Print train and validation accuracy.
+
+Example output:
+
+```text
+Epoch [3/50] Train Loss: 0.5234 | Val Loss: 0.6123
+  sentiment: Train Acc=0.812, Val Acc=0.780
+  emotion:   Train Acc=0.650, Val Acc=0.620
+```
+
+---
+
+### 11.4 Scheduler update
+
+```python
+        # Scheduler step
+        scheduler.step(val_loss)
+```
+
+- Feed the latest `val_loss` into the LR scheduler:
+
+  - If not improved for 3 epochs:
+    - Learning rate is multiplied by `factor=0.5`.
+
+---
+
+### 11.5 Save model checkpoints
+
+```python
+        # Save last checkpoint
+        torch.save(model.state_dict(), os.path.join(SAVED_MODEL_DIR, "model_last.pt"))
+```
+
+- Save the current model’s weights to `model_last.pt` every epoch.
+
+```python
+        # Early stopping and best model checkpoint
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            torch.save(model.state_dict(), os.path.join(SAVED_MODEL_DIR, "model_best.pt"))
+        else:
+            patience_counter += 1
+            if patience_counter >= EARLY_STOPPING_PATIENCE:
+                print(f"Early stopping at epoch {epoch}")
+                break
+```
+
+- Compare current `val_loss` to `best_val_loss`:
+
+  - If improved:
+    - Update `best_val_loss`.
+    - Reset `patience_counter` to 0.
+    - Save weights to `model_best.pt` (best-performing checkpoint).
+
+  - Else:
+    - Increase `patience_counter`.
+    - If counter reaches `EARLY_STOPPING_PATIENCE` (5):
+      - Print message and `break` out of the loop → stop training early.
+
+So:
+
+> You always have:
+> - `model_last.pt` – last epoch you ran.
+> - `model_best.pt` – best validation loss model seen so far.
+
+---
+
+### 11.6 Close logger and exit
+
+```python
+    logger.close()
+```
+
+- Close TensorBoard writer (flushes events).
+
+---
+
+## 12. Entry point
+
+```python
+if __name__ == "__main__":
+    main()
+```
+
+- If this file is run directly (`python training/train.py`), call `main()`.
+- This kicks off the whole training process.
+
+---
+
+## Mental picture of the training loop
+
+At a high level:
+
+```text
+Load config → build FG_MFN → load train & val datasets
+
+for epoch in 1..EPOCHS:
+    # Training
+    for each train batch:
+        model.train()
+        forward (images+text) → outputs_per_attribute
+        compute loss (single attribute or average of multiple)
+        backward + optimizer step
+        record train loss, accuracy, F1 per attribute
+
+    # Validation
+    for each val batch:
+        model.eval()
+        forward → outputs_per_attribute
+        compute val loss and metrics (no backprop)
+
+    Log everything to TensorBoard & CSV
+    Print summary
+    Update LR scheduler based on val_loss
+    Save "last" checkpoint
+    If best val_loss so far: save "best" checkpoint
+    If val_loss not improving for N epochs: early stop
+
+Close logger
+```
+
+If you like, I can next show:
+
+- How to run TensorBoard to inspect the logs this Logger writes.
+- Or how to adapt the loss computation to put different weights on different attributes.

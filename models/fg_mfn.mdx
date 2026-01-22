@@ -1,0 +1,647 @@
+Here’s a step‑by‑step, non‑technical, and “visual” explanation of what this code does.
+
+Think of this file as defining **one big brain** that:
+
+- Looks at an **image**  
+- Reads some **text**  
+- **Combines** what it saw and read  
+- Then answers **several questions at once** about that content (theme, sentiment, emotion, etc.)
+
+We’ll walk from top to bottom.
+
+---
+
+## 1. File header and imports
+
+```python
+# models/fg_mfn.py
+import json
+import torch
+import torch.nn as nn
+from models.visual_module import VisualModule
+from models.text_module import TextModule
+from utils.path import MODEL_CONFIG
+```
+
+**Line by line:**
+
+- `# models/fg_mfn.py`  
+  Just a comment: the path/name of this file.
+
+- `import json`  
+  Brings in Python’s JSON library so we can read a configuration file (a `.json` file) that holds settings for the model.
+
+- `import torch`  
+  Imports PyTorch, a library for building neural networks.
+
+- `import torch.nn as nn`  
+  Imports the neural network parts of PyTorch.  
+  We rename it as `nn` so we can write things like `nn.Linear`, `nn.ReLU`, etc.
+
+- `from models.visual_module import VisualModule`  
+  Imports a custom component called `VisualModule` from somewhere else in the project.  
+  **Conceptually**: this is the “image brain” — something that knows how to turn an image into a vector of numbers that represent what’s in the image.
+
+- `from models.text_module import TextModule`  
+  Imports a custom component called `TextModule`.  
+  **Conceptually**: this is the “language brain” — it turns text into a vector of numbers representing the meaning of that text.
+
+- `from utils.path import MODEL_CONFIG`  
+  Imports a path (a string with a file location) that tells us where the model’s configuration file is stored.
+
+---
+
+## 2. Attribute names list
+
+```python
+# Attribute names for multi-head classification
+ATTRIBUTE_NAMES = [
+    "theme", "sentiment", "emotion", "dominant_colour", "attention_score",
+    "trust_safety", "target_audience", "predicted_ctr", "likelihood_shares"
+]
+```
+
+- This is a **list of different “questions”** we may want the model to answer about the content.
+
+Think of it as:
+
+> For every image+text pair, the model will try to classify:
+> - What is the **theme**?
+> - What is the **sentiment** (positive/negative/neutral)?
+> - What **emotion** is expressed?
+> - What is the **dominant colour**?
+> - What is the **attention score** (how attention-grabbing is it)?
+> - What about **trust & safety** (maybe if it’s safe content)?
+> - What is the **target audience**?
+> - Predicted **CTR** (click‑through rate).
+> - Likelihood of **shares**.
+
+Not all projects will use all of these, but this is the “menu” of possible outputs.
+
+---
+
+## 3. The main class: `FG_MFN`
+
+```python
+class FG_MFN(nn.Module):
+```
+
+- This defines a class named `FG_MFN`.  
+- It **inherits from** `nn.Module`, which is the basic building block for models in PyTorch.
+
+Think: `FG_MFN` is our **main model**.
+
+### 3.1 The constructor: `__init__`
+
+```python
+    def __init__(self, cfg):
+        super(FG_MFN, self).__init__()
+```
+
+- `def __init__(self, cfg):`  
+  This is the **constructor** — the method that runs when you create `FG_MFN(cfg)`.
+
+- `cfg` is a configuration dictionary (loaded from JSON later). It tells the model:
+  - which image backbone to use
+  - which text encoder to use
+  - hidden dimensions
+  - what attributes to predict
+  - dropout rate, etc.
+
+- `super(FG_MFN, self).__init__()`  
+  This calls the parent class (`nn.Module`)’s initialization, which sets up important internal stuff PyTorch needs.
+
+---
+
+```python
+        freeze = cfg.get("FREEZE_BACKBONE", False)
+```
+
+- Looks into the config for the key `"FREEZE_BACKBONE"`.
+- If it’s there, use that value; if not, default to `False`.
+
+“Freeze backbone” usually means **do not update** the weights of the image/text encoders during training. They stay fixed like a pre-trained feature extractor.
+
+Think of it as:
+
+> Are we going to **lock** the earlier parts of the model and only train the later parts?
+
+---
+
+### 3.2 Create image and text modules
+
+```python
+        self.visual_module = VisualModule(backbone=cfg["IMAGE_BACKBONE"], out_features=cfg["HIDDEN_DIM"], freeze=freeze)
+```
+
+- `self.visual_module = ...`  
+  We create the **image processing part** of the model and attach it to `self`.
+
+- `VisualModule(...)` takes:
+  - `backbone=cfg["IMAGE_BACKBONE"]`:  
+    Which pre-trained image model to use (e.g., a ResNet, ViT, etc. — details depend on your code).
+  - `out_features=cfg["HIDDEN_DIM"]`:  
+    It should output a vector with length equal to `HIDDEN_DIM`.  
+    This is like saying: “after all the visual processing, represent the image as a vector of size HIDDEN_DIM.”
+  - `freeze=freeze`: whether to freeze this part during training.
+
+Visually:
+
+> Image → VisualModule → vector of length HIDDEN_DIM
+
+---
+
+```python
+        self.text_module = TextModule(encoder_name=cfg["TEXT_ENCODER"], out_features=cfg["HIDDEN_DIM"], freeze=freeze)
+```
+
+- Similarly, this creates the **text processing part** of the model.
+
+- `TextModule(...)` takes:
+  - `encoder_name=cfg["TEXT_ENCODER"]`: which language model to use (e.g., BERT, RoBERTa, etc.).
+  - `out_features=cfg["HIDDEN_DIM"]`: output vector length.
+  - `freeze=freeze`: freeze or not.
+
+Visually:
+
+> Text → TextModule → vector of length HIDDEN_DIM
+
+So now we have two brains:
+
+- One for images (`visual_module`)
+- One for text (`text_module`)
+
+Both produce the **same size** vectors so that they can be combined.
+
+---
+
+### 3.3 How to fuse image and text
+
+```python
+        self.fusion_type = cfg.get("FUSION_TYPE", "concat")
+```
+
+- `self.fusion_type` is how we will **combine** the image vector and text vector.
+
+- It looks for `"FUSION_TYPE"` in the config; if not found, it defaults to `"concat"` (short for “concatenate” = stick them side-by-side).
+
+Two typical options:
+
+1. `concat`: `[image_features, text_features]` → one long vector.  
+2. Something else, like adding them element‑wise (`visual + text`).
+
+---
+
+```python
+        fusion_dim = cfg["HIDDEN_DIM"] * 2 if self.fusion_type == "concat" else cfg["HIDDEN_DIM"]
+```
+
+- We compute the size (length) of the **fused vector**.
+
+- If `fusion_type` is `"concat"`:
+  - We glue the image vector (length HIDDEN_DIM) and text vector (length HIDDEN_DIM) together.
+  - So total length = `HIDDEN_DIM * 2`.
+
+- Otherwise (e.g., if we just add them):
+  - The result is same size as each one: `HIDDEN_DIM`.
+
+So `fusion_dim` tells us: **how many numbers are in the combined representation?**
+
+---
+
+### 3.4 Shared hidden layer
+
+```python
+        # Shared hidden layer
+        self.shared_fc = nn.Sequential(
+            nn.Linear(fusion_dim, cfg["HIDDEN_DIM"]),
+            nn.ReLU(),
+            nn.Dropout(cfg["DROPOUT"])
+        )
+```
+
+This defines a small **neural network block** that will be shared by all the different predictions (theme, sentiment, etc.).
+
+Let’s break it:
+
+- `self.shared_fc = nn.Sequential(...)`  
+  `nn.Sequential` means: **do these layers one after another**.
+
+Inside:
+
+1. `nn.Linear(fusion_dim, cfg["HIDDEN_DIM"])`  
+   - A **Linear** layer is like a **dense / fully-connected** layer:  
+     it takes a vector of length `fusion_dim` and outputs a vector of length `HIDDEN_DIM`.  
+   - Think of it as “mixing and recombining” the information from the fused representation.
+
+2. `nn.ReLU()`  
+   - An activation function.  
+   - It takes the output from the Linear layer and replaces negative values with 0.  
+   - This introduces non-linearity (allows the model to learn more complex patterns).
+
+3. `nn.Dropout(cfg["DROPOUT"])`  
+   - Dropout randomly sets some of the entries to zero during training.  
+   - This helps prevent **overfitting** (the model memorizing training data too closely).  
+   - `cfg["DROPOUT"]` is a number like 0.1 or 0.5, meaning “drop this proportion of units”.
+
+So visually:
+
+> [fused image+text vector] → Linear → ReLU → Dropout → **shared representation**
+
+This is a **common trunk** that all the different task heads will share.
+
+---
+
+### 3.5 Multi-head output layers
+
+```python
+        # Multi-head classifiers for each attribute
+        self.attribute_heads = nn.ModuleDict()
+        self.cfg = cfg
+```
+
+- `self.attribute_heads = nn.ModuleDict()`  
+  This creates an empty “dictionary of modules”.  
+  Think of it as a named box where we can put multiple small networks, each labeled by a string (like `"sentiment"` or `"emotion"`).
+
+- `self.cfg = cfg`  
+  Just storing the configuration inside the model so we can use it later (e.g. in `get_label_names`).
+
+---
+
+#### 3.5.1 New style config (multi-attribute)
+
+```python
+        if "ATTRIBUTES" in cfg:
+            # New multi-attribute config
+            for attr_name in ATTRIBUTE_NAMES:
+                if attr_name in cfg["ATTRIBUTES"]:
+                    num_classes = cfg["ATTRIBUTES"][attr_name]["num_classes"]
+                    self.attribute_heads[attr_name] = nn.Linear(cfg["HIDDEN_DIM"], num_classes)
+```
+
+- `if "ATTRIBUTES" in cfg:`  
+  Checks if the config has an `"ATTRIBUTES"` section.  
+  If yes, it means we’re using the **new style**, multi-attribute setup.
+
+- `for attr_name in ATTRIBUTE_NAMES:`  
+  Loop through each possible attribute name (`theme`, `sentiment`, `emotion`, ...).
+
+Inside the loop:
+
+- `if attr_name in cfg["ATTRIBUTES"]:`  
+  Some projects might not need all attributes.  
+  This line says: only create a head if this attribute is actually configured.
+
+- `num_classes = cfg["ATTRIBUTES"][attr_name]["num_classes"]`  
+  For each attribute we are using, read how many categories it has from the config.  
+  Examples:
+  - `sentiment`: maybe 3 classes (positive / neutral / negative)
+  - `emotion`: maybe 6 classes (happy, sad, angry, etc.)
+
+- `self.attribute_heads[attr_name] = nn.Linear(cfg["HIDDEN_DIM"], num_classes)`  
+  For each attribute, we create a **Linear layer** that:
+  - Takes the shared representation (`HIDDEN_DIM` long vector)
+  - Outputs a vector of length `num_classes` → these are the **logits** (raw scores) for each possible label.
+
+Conceptually:
+
+> Shared trunk → separate little branch per attribute:
+> - one branch predicts sentiment
+> - one branch predicts theme
+> - one branch predicts emotion  
+> etc.
+
+This is called **multi-head classification**.
+
+---
+
+#### 3.5.2 Backwards compatibility (old style: only sentiment)
+
+```python
+        else:
+            # Backwards compatibility: single sentiment classifier
+            self.attribute_heads["sentiment"] = nn.Linear(cfg["HIDDEN_DIM"], cfg.get("NUM_CLASSES", 2))
+```
+
+If `"ATTRIBUTES"` is NOT in the config:
+
+- We assume an older configuration style, where we only care about **sentiment**.
+
+- `self.attribute_heads["sentiment"] = ...`  
+  Creates a single output head named `"sentiment"`.
+
+- `cfg.get("NUM_CLASSES", 2)`  
+  How many sentiment classes?  
+  If not specified, default to 2 (e.g., positive vs negative).
+
+So even if someone uses the old config, the code still works.
+
+---
+
+## 4. The `forward` method: how data flows through the model
+
+```python
+    def forward(self, image_tensor, text_tensor, attention_mask=None):
+```
+
+- This method defines what happens when you call the model on some inputs: `model(image, text)`.
+
+- `image_tensor`:  
+  A batch of images as tensors. Typical shape: `[batch_size, 3, height, width]`  
+  Example: `[2, 3, 224, 224]` = 2 images, 3 color channels (RGB), 224x224 pixels.
+
+- `text_tensor`:  
+  A batch of texts, represented as token IDs (integers referring to words/subwords).  
+  Example: `[2, 128]` = 2 sentences, each represented as 128 tokens.
+
+- `attention_mask` (optional):  
+  A mask indicating which token positions are real words and which are padding.  
+  Often used by language models.
+
+---
+
+```python
+        visual_feat = self.visual_module(image_tensor)       # [batch, HIDDEN_DIM]
+```
+
+- Feed the images into the visual module:
+
+> Images → `self.visual_module` → `visual_feat`
+
+- The result `visual_feat` is a tensor with shape `[batch_size, HIDDEN_DIM]`.  
+  Each image is now represented as a single vector of length `HIDDEN_DIM`.
+
+---
+
+```python
+        text_feat = self.text_module(text_tensor, attention_mask=attention_mask)  # [batch, HIDDEN_DIM]
+```
+
+- Feed the text + attention mask into the text module:
+
+> Text → `self.text_module` → `text_feat`
+
+- `text_feat` is also `[batch_size, HIDDEN_DIM]`.
+
+So for each input example (image+text pair):
+
+- `visual_feat[i]` = “image embedding”
+- `text_feat[i]` = “text embedding”
+
+---
+
+```python
+        if self.fusion_type == "concat":
+            fused = torch.cat([visual_feat, text_feat], dim=1)
+        else:
+            fused = visual_feat + text_feat  # simple addition as example
+```
+
+Now we **fuse** the image and text representations:
+
+- If `fusion_type` is `"concat"`:
+  - `torch.cat([visual_feat, text_feat], dim=1)`  
+    Concatenate along the feature dimension.  
+    So `[batch, HIDDEN_DIM]` + `[batch, HIDDEN_DIM]` → `[batch, 2 * HIDDEN_DIM]`.
+
+- Else:
+  - `fused = visual_feat + text_feat`  
+    Element-wise addition: combine each corresponding position in the vector.
+
+Visually:
+
+> Two vectors per example → combine into one vector per example.
+
+---
+
+```python
+        # Pass through shared layer
+        shared_out = self.shared_fc(fused)
+```
+
+- Take that `fused` vector and run it through the **shared trunk** we defined earlier:
+
+> fused → Linear → ReLU → Dropout → `shared_out`
+
+- `shared_out` has shape `[batch_size, HIDDEN_DIM]`.
+
+This is now a **joint representation** of the image+text content, refined and ready for the different heads.
+
+---
+
+```python
+        # Get logits from each head
+        outputs = {}
+        for attr_name, head in self.attribute_heads.items():
+            outputs[attr_name] = head(shared_out)
+```
+
+- `outputs = {}`  
+  Create an empty Python dictionary to store results.
+
+- `for attr_name, head in self.attribute_heads.items():`  
+  Loop through each attribute head we created earlier.  
+  For example:
+  - `attr_name = "sentiment"`, `head = nn.Linear(HIDDEN_DIM, num_sentiment_classes)`
+  - `attr_name = "emotion"`, `head = nn.Linear(HIDDEN_DIM, num_emotion_classes)`
+
+- `outputs[attr_name] = head(shared_out)`  
+  For each output head:
+  - Feed in `shared_out`.
+  - Get out a tensor of shape `[batch_size, num_classes_for_that_attribute]`.
+
+So `outputs` will look like:
+
+```python
+{
+    "sentiment": tensor of shape [batch, num_sentiment_classes],
+    "emotion": tensor of shape [batch, num_emotion_classes],
+    "theme": tensor of shape [batch, num_theme_classes],
+    ...
+}
+```
+
+These are the **raw prediction scores (logits)** for each attribute.
+
+---
+
+```python
+        return outputs  # dict of {attr_name: [batch, num_classes]}
+```
+
+- Finally, we return the `outputs` dictionary.
+
+User code can then:
+
+- Apply softmax to get probabilities
+- Choose the top class per attribute
+- Translate class indices into human-readable labels
+
+---
+
+## 5. Helper: `get_label_names`
+
+```python
+    def get_label_names(self, attr_name):
+        """Get the label names for a given attribute."""
+        if "ATTRIBUTES" in self.cfg and attr_name in self.cfg["ATTRIBUTES"]:
+            return self.cfg["ATTRIBUTES"][attr_name]["labels"]
+        return None
+```
+
+- This method is a **small utility** that helps map from **class indices** to **text labels**.
+
+- `if "ATTRIBUTES" in self.cfg and attr_name in self.cfg["ATTRIBUTES"]:`  
+  Checks if we have an `"ATTRIBUTES"` section in the config, and if the requested attribute exists there.
+
+- `return self.cfg["ATTRIBUTES"][attr_name]["labels"]`  
+  Returns the list of label names defined in the config.  
+  For example, for sentiment, it might return:
+  ```python
+  ["negative", "neutral", "positive"]
+  ```
+
+- If not found, returns `None`.
+
+This is useful when you want to turn numeric outputs into readable strings.
+
+---
+
+## 6. Example usage (`if __name__ == "__main__":` block)
+
+This is code that **only runs when you execute this file directly** (e.g., `python fg_mfn.py`), not when you import it.
+
+```python
+# Example usage
+if __name__ == "__main__":
+    with open(MODEL_CONFIG, "r") as f:
+        cfg = json.load(f)
+```
+
+- `if __name__ == "__main__":`  
+  Means: “If this file is the program we’re running directly, do the following.”
+
+- `with open(MODEL_CONFIG, "r") as f:`  
+  Opens the configuration file located at `MODEL_CONFIG` in read mode.
+
+- `cfg = json.load(f)`  
+  Reads the JSON file and turns it into a Python dictionary called `cfg`.
+
+---
+
+```python
+    model = FG_MFN(cfg)
+```
+
+- Creates an instance of the model using the loaded configuration.
+
+---
+
+```python
+    img = torch.randn(2, 3, 224, 224)          # dummy image batch
+    text = torch.randint(0, 1000, (2, 128))    # dummy token ids
+```
+
+- `img = torch.randn(2, 3, 224, 224)`  
+  Creates a **fake batch of 2 images**:
+  - Random pixel values
+  - Shape `[2, 3, 224, 224]`
+
+- `text = torch.randint(0, 1000, (2, 128))`  
+  Creates a **fake batch of token IDs**:
+  - Each token ID is a random integer between 0 and 999.
+  - Shape `[2, 128]` = 2 samples, 128 tokens each.
+
+This is just for testing; no real meaning.
+
+---
+
+```python
+    outputs = model(img, text)
+```
+
+- Calls the model’s `forward` method (via the `__call__` mechanism).  
+  Internally, this runs everything we discussed:
+
+> img → visual_module  
+> text → text_module  
+> → fuse → shared_fc → attribute_heads  
+> → outputs dict
+
+---
+
+```python
+    print("Output keys:", outputs.keys())
+    for k, v in outputs.items():
+        print(f"  {k}: {v.shape}")
+```
+
+- `print("Output keys:", outputs.keys())`  
+  Prints which attributes we have outputs for (e.g., `dict_keys(['sentiment', 'emotion', ...])`).
+
+- Then for each key (`k`) and value (`v`) in the outputs:
+  - `print(f"  {k}: {v.shape}")`  
+    Prints the attribute name and the shape of its prediction tensor.
+
+Example output might look like:
+
+```text
+Output keys: dict_keys(['sentiment', 'emotion'])
+  sentiment: torch.Size([2, 3])
+  emotion: torch.Size([2, 6])
+```
+
+Meaning:
+
+- For `sentiment`:  
+  2 examples, 3 possible sentiment classes.
+- For `emotion`:  
+  2 examples, 6 possible emotion classes.
+
+---
+
+## Visual summary of the whole model
+
+Think of the model as a **Y‑shaped pipeline**:
+
+```text
+         ┌──────────────────┐
+Image →  │  VisualModule    │
+         └────────┬─────────┘
+                  │  visual_feat (HIDDEN_DIM)
+                  │
+                  ▼
+                FUSION   →  fused
+                  ▲
+                  │
+                  │ text_feat (HIDDEN_DIM)
+         ┌────────┴─────────┐
+Text  →  │   TextModule     │
+         └──────────────────┘
+
+
+           fused
+             │
+             ▼
+      ┌─────────────┐
+      │  shared_fc  │  (Linear + ReLU + Dropout)
+      └──────┬──────┘
+             │ shared_out (HIDDEN_DIM)
+             │
+   ┌─────────┼─────────────────────────────────┐
+   │         │                                 │
+   ▼         ▼                                 ▼
+sentiment  emotion                         theme      ... (etc.)
+  head      head                            head
+ (Linear)  (Linear)                        (Linear)
+   │         │                                 │
+   ▼         ▼                                 ▼
+ logits    logits                            logits
+```
+
+- The **bottom trunk** (shared_fc) is common for all tasks.
+- The **top branches** are separate heads for each attribute.
+
+---
+

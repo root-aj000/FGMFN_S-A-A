@@ -1,0 +1,423 @@
+This file defines a **unit test suite** that verifies your **preprocessing pipeline**:
+
+- Text cleaning & tokenization  
+- Image resizing & normalization  
+- Dataset loading (images + text + labels)
+
+It makes sure that each step produces outputs with the expected shapes, keys, and behavior.
+
+I’ll walk through it section by section.
+
+---
+
+## 1. Imports
+
+```python
+import unittest
+import os
+import torch
+import shutil
+from tests.test_utils import setup_dummy_data, teardown_dummy_data
+from preprocessing.dataset import CustomDataset
+from preprocessing.text_preprocessing import clean_text, tokenize_text
+from preprocessing.image_preprocessing import resize_image, normalize_image
+import cv2
+import numpy as np
+```
+
+- `unittest` – Python’s standard testing framework.  
+- `os`, `shutil` – not directly used in this test file (harmless leftovers).  
+- `torch` – for tensor type checks.  
+- `setup_dummy_data`, `teardown_dummy_data` – helper functions:
+  - `setup_dummy_data(base_dir, multi_attribute=True)` creates temporary dummy images + CSV for testing.
+  - `teardown_dummy_data(base_dir)` removes the temp directory after tests.  
+- `CustomDataset` – your dataset class that wraps image + text + labels.  
+- `clean_text`, `tokenize_text` – from your text preprocessing module.  
+- `resize_image`, `normalize_image` – from your image preprocessing module.  
+- `cv2`, `np` – OpenCV and NumPy, used to construct a dummy image directly.
+
+---
+
+## 2. Test case class
+
+```python
+class TestPreprocessing(unittest.TestCase):
+```
+
+- `TestPreprocessing` is a **test suite**.  
+- Each method starting with `test_` will be run as a separate test.
+
+---
+
+## 3. `setUp` and `tearDown`
+
+### 3.1 `setUp`: run before each test
+
+```python
+    def setUp(self):
+        self.test_dir = "tests/temp_data_preprocessing"
+        self.csv_path, self.image_dir = setup_dummy_data(self.test_dir, multi_attribute=True)
+```
+
+- `setUp` is called automatically **before every test method**.
+
+What it does:
+
+- `self.test_dir = "tests/temp_data_preprocessing"`  
+  - A temporary directory path for this test run.
+
+- `self.csv_path, self.image_dir = setup_dummy_data(...)`  
+  - Calls the helper to:
+    - Create `tests/temp_data_preprocessing/`.
+    - Inside it, create:
+      - `images/` containing dummy “document-like” JPG images.
+      - `data.csv` describing those images (+ labels).
+    - `multi_attribute=True` means:
+      - The CSV has columns like `sentiment_num`, `emotion_num`, etc.
+  - Returns:
+    - `csv_path` – path to `data.csv`.
+    - `image_dir` – path to `images/`.
+
+These are stored on `self` so the test methods can access them.
+
+---
+
+### 3.2 `tearDown`: run after each test
+
+```python
+    def tearDown(self):
+        teardown_dummy_data(self.test_dir)
+```
+
+- `tearDown` runs automatically **after every test method**.
+
+- `teardown_dummy_data(self.test_dir)`:
+  - Deletes `tests/temp_data_preprocessing` completely (images + CSV).
+  - Ensures tests don’t leave temporary files behind.
+
+So each test:
+
+1. Gets a fresh dummy dataset in `setUp`.
+2. Cleans it up in `tearDown`.
+
+---
+
+## 4. Test: `test_clean_text`
+
+```python
+    def test_clean_text(self):
+        raw = "  This IS a TEST!! "
+        cleaned = clean_text(raw)
+        self.assertEqual(cleaned, "this is a test")
+```
+
+This test checks that **text cleaning** behaves as expected.
+
+Step by step:
+
+- `raw = "  This IS a TEST!! "`  
+  - A string with:
+    - Leading/trailing spaces.
+    - Mixed case.
+    - Punctuation (`!!`).
+
+- `cleaned = clean_text(raw)`  
+  - Calls your `clean_text` function.
+  - As per your code, `clean_text`:
+    - Lowercases the string.
+    - Strips leading/trailing whitespace.
+    - Removes non-alphanumeric characters except spaces.
+    - Collapses multiple spaces into one.
+
+- `self.assertEqual(cleaned, "this is a test")`  
+  - Asserts that the result is exactly `"this is a test"`.
+  - If not, the test fails.
+
+This ensures:
+
+> `clean_text` normalizes input text to lowercase alphanumeric words with single spaces.
+
+---
+
+## 5. Test: `test_tokenize_text`
+
+```python
+    def test_tokenize_text(self):
+        text = "hello world"
+        tokens = tokenize_text(text, max_length=10)
+```
+
+- `text = "hello world"`  
+- `tokens = tokenize_text(text, max_length=10)`  
+
+Your `tokenize_text` (from `text_preprocessing.py`) returns a dict:
+
+```python
+{
+  "input_ids": tensor([max_length]),
+  "attention_mask": tensor([max_length])
+}
+```
+
+With BERT tokenization, padding, and truncation applied.
+
+---
+
+Now the assertions:
+
+```python
+        self.assertIn("input_ids", tokens)
+        self.assertIn("attention_mask", tokens)
+```
+
+- Ensure the dictionary has both keys.
+
+```python
+        self.assertEqual(tokens["input_ids"].shape, (10,))
+        self.assertEqual(tokens["attention_mask"].shape, (10,))
+```
+
+- `max_length=10` so `input_ids` and `attention_mask` should both be length 10.
+
+---
+
+Padding behavior:
+
+```python
+        # Check that padding is 0 and mask is 0 there
+        # 'hello world' is short, so rest should be padded
+        self.assertEqual(tokens["input_ids"][-1].item(), 0)
+        self.assertEqual(tokens["attention_mask"][-1].item(), 0)
+```
+
+- `"hello world"` tokenized with `[CLS]` and `[SEP]` will be shorter than length 10.
+- Your tokenizer uses:
+  - `padding="max_length"`
+  - So it fills the rest with `[PAD]` tokens, whose ID is usually 0.
+  - Attention mask is 1 for real tokens, 0 for padding.
+
+These checks assert:
+
+- The last token ID should be 0 (padding).
+- The last attention mask value should be 0 (padding not attended to).
+
+This confirms:
+
+> `tokenize_text` is padding correctly and returning masks aligned with padding.
+
+---
+
+## 6. Test: `test_dataset_loading`
+
+```python
+    def test_dataset_loading(self):
+        dataset = CustomDataset(self.csv_path, image_dir=self.image_dir, augment=False)
+        self.assertEqual(len(dataset), 5)
+```
+
+- Builds a `CustomDataset` from the dummy CSV + images:
+  - `augment=False` – no random flips/rotations for this test.
+
+- `self.assertEqual(len(dataset), 5)`  
+  - `setup_dummy_data` created exactly 5 dummy rows/images.
+  - So `len(dataset)` should be 5.
+
+---
+
+### 6.1 Inspect first sample structure
+
+```python
+        sample = dataset[0]
+        self.assertIn("visual", sample)
+        self.assertIn("text", sample)
+        self.assertIn("attention_mask", sample)
+```
+
+- `sample = dataset[0]` – get the first item.
+
+Your `CustomDataset.__getitem__` returns a dict like:
+
+```python
+{
+  "visual": img_tensor,         # [3, 224, 224]
+  "text": input_ids,            # [seq_len]
+  "attention_mask": mask,       # [seq_len]
+  "sentiment": ...,
+  "emotion": ...,
+  ...
+}
+```
+
+So we assert:
+
+- The keys `"visual"`, `"text"`, `"attention_mask"` exist.
+
+---
+
+### 6.2 Check presence of labels depending on mode
+
+```python
+        if dataset.legacy_mode:
+            self.assertIn("label", sample)
+        else:
+            self.assertIn("theme", sample)
+            self.assertIn("sentiment", sample)
+```
+
+- `dataset.legacy_mode` is True only if the CSV had `label_num` and no attribute-specific columns.
+- Here `setup_dummy_data(..., multi_attribute=True)` was used, so:
+  - `legacy_mode` should be False.
+  - We expect multi-attribute labels instead (e.g., `theme`, `sentiment`, etc.).
+
+So:
+
+- If `legacy_mode`:
+  - Must have a key `"label"` in the sample.
+- Else:
+  - Must at least have keys `"theme"` and `"sentiment"` (two of the attributes).
+
+This ensures:
+
+> The dataset returns labels in the correct format depending on the CSV style.
+
+---
+
+### 6.3 Check tensor shapes
+
+```python
+        # Visual shape: [3, 224, 224]
+        self.assertEqual(sample["visual"].shape, (3, 224, 224))
+```
+
+- `sample["visual"]` should be a normalized image tensor in CHW format:
+  - 3 channels (RGB), height 224, width 224.
+
+```python
+        # Text shape
+        self.assertEqual(sample["text"].dim(), 1)
+        self.assertEqual(sample["attention_mask"].dim(), 1)
+```
+
+- Both `"text"` and `"attention_mask"` should be 1D (vectors), not 2D:
+  - Shape like `[seq_len]` (e.g., `[128]`), not `[1, seq_len]`.
+
+If any of these conditions fail, the test fails, indicating preprocessing/dataset shape mismatch.
+
+---
+
+## 7. Test: `test_image_preprocessing`
+
+```python
+    def test_image_preprocessing(self):
+        # Create a solid red BGR image (0, 0, 255)
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        img[:] = (0, 0, 255) 
+```
+
+- Creates a 100×100 image with 3 channels, all initialized to 0.
+- `img[:] = (0, 0, 255)` sets the entire image to blue channel=255 in BGR, which is **pure red** in RGB (since OpenCV uses BGR).
+
+So we have a completely red image.
+
+---
+
+### 7.1 Test `resize_image`
+
+```python
+        resized = resize_image(img, size=(224, 224))
+        self.assertEqual(resized.shape, (224, 224, 3))
+```
+
+- `resize_image(img, size=(224, 224))` calls your `image_preprocessing.resize_image`:
+  - It uses `cv2.resize` with `INTER_AREA`.
+- The result should be 224×224×3.
+
+Assert:
+
+- Shape is exactly `(224, 224, 3)`.
+
+---
+
+### 7.2 Test `normalize_image`
+
+```python
+        # Note: normalize_image expects RGB input if you did the conversion manually before
+        # But here we are unit testing the function itself which expects HWC numpy array
+        # Real pipeline converts BGR->RGB before calling normalize_image usually, or inside dataset.py
+        # check dataset.py logic: it calls resize, then converts BGR2RGB, then normalize.
+        
+        # Let's verify normalize output range
+        norm = normalize_image(resized)
+        self.assertTrue(torch.is_tensor(norm))
+        self.assertEqual(norm.shape, (3, 224, 224))
+```
+
+Comment explains:
+
+- In the real pipeline:
+  - You usually convert images from BGR (OpenCV) to RGB before calling `normalize_image`.
+  - `normalize_image` itself just assumes an HWC NumPy array; it doesn’t change color order.
+
+In this test:
+
+- They just pass the BGR image to `normalize_image` to test its **core behavior**:
+  - Convert to float in [0,1].
+  - Reorder to CHW.
+  - Normalize per channel using ImageNet means/stds.
+  - Return a PyTorch tensor.
+
+Assertions:
+
+- `self.assertTrue(torch.is_tensor(norm))`
+  - The output must be a PyTorch tensor.
+
+- `self.assertEqual(norm.shape, (3, 224, 224))`
+  - It must be 3×224×224 (CHW).
+  - Confirms `np.transpose` was used correctly and size is preserved.
+
+They’re not checking numerical ranges here, just that the **format** is correct.
+
+---
+
+## 8. Test runner
+
+```python
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- If you run this file directly (e.g., `python tests/test_preprocessing.py`), `unittest` will:
+  - Discover `TestPreprocessing`.
+  - For each `test_*` method:
+    - Call `setUp` → the test method → `tearDown`.
+  - Print a summary of which tests passed/failed.
+
+---
+
+## Big-picture view
+
+This test file verifies that:
+
+1. **Text cleaning**:
+   - Removes extra spaces and punctuation.
+   - Lowercases text.
+   - Leaves only alphanumeric words separated by single spaces.
+
+2. **Tokenization**:
+   - Produces `"input_ids"` and `"attention_mask"` keys.
+   - Respects `max_length`.
+   - Pads with 0s for both IDs and mask at the tail.
+
+3. **CustomDataset**:
+   - Correctly loads and preprocesses data from the dummy CSV + images.
+   - Returns expected keys (visual, text, attention_mask, labels).
+   - Shapes are compatible with your model.
+
+4. **Image preprocessing**:
+   - Resizes correctly to 224×224.
+   - Transforms HWC NumPy image to CHW tensor with correct shape.
+
+If you want, I can help you extend this suite with:
+
+- A test that verifies multi-attribute labels are correctly present for all attributes.
+- Or a test that ensures augmentation is applied only when `augment=True` in the dataset.

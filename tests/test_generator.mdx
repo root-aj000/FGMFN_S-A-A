@@ -1,0 +1,420 @@
+This test file verifies that your **dataset generation script** (`dataset_generator.prepare_data`) works end‑to‑end:
+
+- It creates some fake “raw” images.  
+- Points the generator’s global paths to a temp area.  
+- Mocks OCR so no real OCR is run.  
+- Calls `prepare_dataset()`.  
+- Checks that:
+  - Train/val CSVs are created.  
+  - Images are processed into an output folder.  
+  - The OCR text used in CSVs is what you mocked.
+
+I’ll go through it piece by piece.
+
+---
+
+## 1. Imports
+
+```python
+import unittest
+import os
+import shutil
+from unittest.mock import patch, MagicMock
+# Import the module to path globals, but don't run prepare_dataset yet
+import dataset_generator.prepare_data as prep
+from tests.test_utils import create_dummy_image
+```
+
+- `import unittest`  
+  Python’s unit testing framework.
+
+- `import os`  
+  For file paths and directory operations (making/removing directories, listing files).
+
+- `import shutil`  
+  For high-level file operations like deleting a directory tree.
+
+- `from unittest.mock import patch, MagicMock`  
+  Tools for mocking functions/objects in tests:
+  - `patch` – temporarily replace a function/class during the test.
+  - `MagicMock` – not used here, but handy for flexible mocks.
+
+- `import dataset_generator.prepare_data as prep`  
+  Imports your dataset generator module under the name `prep`.  
+  Crucially:
+  - This **does not** call `prep.prepare_dataset()` yet; it just loads the module so we can modify its globals and call the function manually.
+
+- `from tests.test_utils import create_dummy_image`  
+  Helper that creates a simple image (we saw earlier) to represent a raw input image.
+
+---
+
+## 2. Test case class
+
+```python
+class TestDatasetGenerator(unittest.TestCase):
+```
+
+- Defines a test case named `TestDatasetGenerator`.
+- Inherits from `unittest.TestCase`, so `test_*` methods will be discovered and run by `unittest`.
+
+---
+
+## 3. `setUp`: create temp folders and raw images
+
+```python
+    def setUp(self):
+        self.test_base = "tests/temp_generator"
+        self.raw_dir = os.path.join(self.test_base, "raw")
+        self.processed_dir = os.path.join(self.test_base, "processed")
+        self.log_dir = os.path.join(self.test_base, "logs")
+        
+        os.makedirs(self.raw_dir, exist_ok=True)
+        # Create dummy raw images
+        for i in range(3):
+            create_dummy_image(os.path.join(self.raw_dir, f"raw_{i}.jpg"))
+```
+
+- `setUp` runs **before each test**.
+
+- `self.test_base = "tests/temp_generator"`  
+  Root folder for everything created during this test.
+
+- `self.raw_dir` = `tests/temp_generator/raw`  
+  Where “raw” images will live.
+
+- `self.processed_dir` = `tests/temp_generator/processed`  
+  Where the dataset generator should put processed outputs (CSVs, processed images).
+
+- `self.log_dir` = `tests/temp_generator/logs`  
+  Folder for logs during this test (if needed).
+
+- `os.makedirs(self.raw_dir, exist_ok=True)`  
+  Creates the raw directory if it doesn’t exist, no error if it already exists.
+
+- Loop:
+
+  ```python
+  for i in range(3):
+      create_dummy_image(os.path.join(self.raw_dir, f"raw_{i}.jpg"))
+  ```
+
+  - Creates 3 dummy images:
+    - `raw_0.jpg`, `raw_1.jpg`, `raw_2.jpg` inside `self.raw_dir`.
+  - `create_dummy_image` writes a simple, valid JPG with some text on it.
+
+So after `setUp`:
+
+- There is a temporary directory tree:
+  - `tests/temp_generator/raw/raw_0.jpg`
+  - `tests/temp_generator/raw/raw_1.jpg`
+  - `tests/temp_generator/raw/raw_2.jpg`
+
+These simulate a tiny raw dataset.
+
+---
+
+## 4. `tearDown`: clean up after tests
+
+```python
+    def tearDown(self):
+        if os.path.exists(self.test_base):
+            shutil.rmtree(self.test_base)
+```
+
+- `tearDown` runs **after each test**, even if the test fails.
+
+- `if os.path.exists(self.test_base):`  
+  - If the root temp directory exists:
+
+- `shutil.rmtree(self.test_base)`  
+  - Recursively deletes `tests/temp_generator` and everything under it (raw, processed, logs, etc.).
+
+This ensures tests don’t leave behind data.
+
+---
+
+## 5. Core test: `test_generation_logic`
+
+```python
+    @patch("dataset_generator.prepare_data.extract_text")
+    def test_generation_logic(self, mock_extract):
+```
+
+- Decorator: `@patch("dataset_generator.prepare_data.extract_text")`  
+  - Tells `unittest.mock` to **replace** the `extract_text` function in the `dataset_generator.prepare_data` module with a mock object for the duration of this test.
+  - Any call inside `prep.prepare_dataset()` to `extract_text(...)` will use this mock, **not** the real OCR function.
+
+- `mock_extract` parameter:  
+  - The mock object injected into the test method.
+  - You can set its return value, inspect calls, etc.
+
+Why patch OCR?
+
+- Your real `extract_text` likely uses PaddleX or Tesseract to perform OCR, which is:
+  - Slow.
+  - Requires external dependencies.
+  - Not deterministic.
+- For a unit test, you want:
+  - Fast.
+  - Stable.
+  - Predictable output.
+
+So you mock it.
+
+---
+
+### 5.1 Configure OCR mock
+
+```python
+        # Mock OCR return value to avoid running actual PaddleOCR
+        mock_extract.return_value = ("DUMMY OCR TEXT", 0.99)
+```
+
+- Any time `prep.extract_text(...)` is called inside this test, it will return:
+  - `"DUMMY OCR TEXT"` as the extracted text.
+  - `0.99` as the OCR confidence.
+
+This ensures:
+
+- All images appear to contain the same OCR text.
+- The pipeline’s behavior is repeatable and quick.
+
+---
+
+### 5.2 Save original global paths
+
+```python
+        # Save original globals
+        orig_raw = prep.RAW_DATA_DIR
+        orig_proc = prep.PROCESSED_DATA_DIR
+        orig_out = prep.IMAGE_OUTPUT_DIR
+        orig_log = prep.LOG_DIR
+```
+
+Your `dataset_generator.prepare_data` module has global variables like:
+
+- `RAW_DATA_DIR` – where it looks for raw images.
+- `PROCESSED_DATA_DIR` – where it writes CSVs/processed data.
+- `IMAGE_OUTPUT_DIR` – where it writes processed images.
+- `LOG_DIR` – where it logs errors/information.
+
+Here, they are stored in local variables `orig_raw`, `orig_proc`, `orig_out`, `orig_log` so they can be **restored** after the test.
+
+This is crucial to avoid side effects on other tests or the main application.
+
+---
+
+### 5.3 Override globals for the test
+
+```python
+        try:
+            # Override globals to point to test dirs
+            prep.RAW_DATA_DIR = self.raw_dir
+            prep.PROCESSED_DATA_DIR = self.processed_dir
+            prep.IMAGE_OUTPUT_DIR = os.path.join(self.processed_dir, "images")
+            prep.LOG_DIR = self.log_dir
+```
+
+- Within a `try` block (so we can always restore in `finally`):
+
+- Reassign module-level paths:
+
+  - `prep.RAW_DATA_DIR = self.raw_dir`  
+    - Tell `prepare_data` to treat `tests/temp_generator/raw` as the raw data directory.
+
+  - `prep.PROCESSED_DATA_DIR = self.processed_dir`  
+    - Use `tests/temp_generator/processed` as the base for processed output.
+
+  - `prep.IMAGE_OUTPUT_DIR = os.path.join(self.processed_dir, "images")`  
+    - Processed images go into `tests/temp_generator/processed/images`.
+
+  - `prep.LOG_DIR = self.log_dir`  
+    - Logs go into `tests/temp_generator/logs`.
+
+From `prepare_dataset`’s perspective, it now thinks the entire world is confined to `tests/temp_generator/...`.
+
+---
+
+### 5.4 Ensure those directories exist
+
+```python
+            os.makedirs(prep.IMAGE_OUTPUT_DIR, exist_ok=True)
+            os.makedirs(prep.LOG_DIR, exist_ok=True)
+```
+
+- Create output and log directories if they don’t yet exist.
+
+So the generator can safely write into them.
+
+---
+
+### 5.5 Run the dataset preparation
+
+```python
+            # Run the function
+            prep.prepare_dataset()
+```
+
+- Calls the main function under test: `prepare_dataset()` from `dataset_generator.prepare_data`.
+
+We don’t see the implementation here, but from the name and context, it likely:
+
+- Scans `RAW_DATA_DIR` for images.
+- For each raw image:
+  - Runs `extract_text(image)` (now mocked).
+  - Possibly cleans text, extracts extra info.
+  - Copies/renames the image into `IMAGE_OUTPUT_DIR` (maybe with standardized naming).
+  - Adds a row to a CSV with fields like:
+    - `image_path`
+    - `ocr_text`
+    - labels, etc.
+- Splits data into train/val CSVs under `PROCESSED_DATA_DIR`:
+  - `train.csv`
+  - `val.csv`
+  (perhaps also test, depending on implementation).
+
+This call is where the whole generator pipeline is exercised.
+
+---
+
+### 5.6 Verify outputs exist
+
+```python
+            # Verify outputs
+            self.assertTrue(os.path.exists(os.path.join(self.processed_dir, "train.csv")))
+            self.assertTrue(os.path.exists(os.path.join(self.processed_dir, "val.csv")))
+```
+
+- After `prepare_dataset` completes, we expect:
+
+  - `tests/temp_generator/processed/train.csv`
+  - `tests/temp_generator/processed/val.csv`
+
+- `self.assertTrue(os.path.exists(...))`:
+  - Fails the test if either CSV is missing.
+
+This confirms:
+
+> The dataset generator created the expected CSV files in the processed directory.
+
+---
+
+### 5.7 Check CSV contents include mocked OCR text
+
+```python
+            # Verify CSV content
+            with open(os.path.join(self.processed_dir, "train.csv"), "r") as f:
+                content = f.read()
+                # Should contain the dummy text we mocked
+                self.assertIn("DUMMY OCR TEXT", content)
+```
+
+- Open `train.csv` as plain text.
+- Read entire file content into `content`.
+
+- `self.assertIn("DUMMY OCR TEXT", content)`:
+  - Checks that the string from the OCR mock is present somewhere in the CSV.
+
+This confirms:
+
+- The generator:
+  - Called `extract_text(...)` for each image.
+  - Used the returned value (here `"DUMMY OCR TEXT"`) in the CSV.
+- And that the patch worked (no real OCR was used).
+
+---
+
+### 5.8 Ensure processed images were generated
+
+```python
+            # Verify images were processed (copied/renamed)
+            output_images = os.listdir(prep.IMAGE_OUTPUT_DIR)
+            self.assertTrue(len(output_images) > 0)
+```
+
+- `output_images = os.listdir(prep.IMAGE_OUTPUT_DIR)`:
+  - List all files in the image output directory (`tests/temp_generator/processed/images`).
+
+- `self.assertTrue(len(output_images) > 0)`:
+  - Asserts that at least one image file was written.
+
+This indicates:
+
+> The generator did some work on the raw images (copied/resized/renamed) and placed them in the processed images folder.
+
+---
+
+### 5.9 Finally: restore original globals
+
+```python
+        finally:
+            # Restore globals
+            prep.RAW_DATA_DIR = orig_raw
+            prep.PROCESSED_DATA_DIR = orig_proc
+            prep.IMAGE_OUTPUT_DIR = orig_out
+            prep.LOG_DIR = orig_log
+```
+
+- The `finally` block runs **no matter what**:
+  - Even if `prepare_dataset` raises an exception.
+  - Even if some `assert` fails.
+
+Here, we restore the original path globals in `prep`:
+
+- `prep.RAW_DATA_DIR` back to its original value.
+- `prep.PROCESSED_DATA_DIR` ...
+- `prep.IMAGE_OUTPUT_DIR` ...
+- `prep.LOG_DIR` ...
+
+This is essential because:
+
+- The `prepare_data` module’s global variables are shared across the process.
+- Leaving them pointing to test directories could break other tests or production code that imports this module later.
+
+---
+
+## 6. Test runner
+
+```python
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- If you run this file directly (`python tests/test_dataset_generator.py`), `unittest` will:
+
+  - Discover `TestDatasetGenerator`.
+  - For each `test_*` method:
+    - Run `setUp()`
+    - Run the test
+    - Run `tearDown()`
+  - Print a summary of passed/failed tests.
+
+---
+
+## Overall behavior
+
+In summary, this test validates the **high-level logic** of `prepare_dataset` in a self-contained, safe environment:
+
+1. Create a **temporary workspace** with:
+   - A few dummy raw images.
+   - No interference with real dataset paths.
+
+2. Patch **OCR** to be:
+   - Instant.
+   - Deterministic (`"DUMMY OCR TEXT"`).
+
+3. Redirect the generator’s **global directories** to the temp workspace.
+
+4. Call `prepare_dataset()` and then check:
+
+   - `train.csv` and `val.csv` exist in `processed/`.
+   - `train.csv` contains `"DUMMY OCR TEXT"`.
+   - Processed images are present in `processed/images/`.
+
+5. Restore global paths, clean up temporary folders.
+
+This gives you confidence that:
+
+- The wiring in `prepare_data` is correct (paths, OCR usage, CSV writing, image copying).
+- The generator can run without real OCR and without touching production filesystem paths.

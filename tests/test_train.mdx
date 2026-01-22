@@ -1,0 +1,460 @@
+This file is a **unit test** that checks whether your **multi‑attribute training loop** works end‑to‑end:
+
+- It creates temporary dummy data (images + CSV)  
+- Builds a small FG_MFN model  
+- Runs one training epoch over the dummy data  
+- Verifies that:
+  - A loss can be computed and backpropagated  
+  - The model outputs **all expected attribute heads**
+
+I’ll go through it line by line and function by function.
+
+---
+
+## 1. Imports
+
+```python
+import unittest
+import os
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from tests.test_utils import setup_dummy_data, teardown_dummy_data, ATTRIBUTE_NAMES
+from preprocessing.dataset import CustomDataset
+from models.fg_mfn import FG_MFN
+```
+
+- `unittest`  
+  Python’s built‑in testing framework. You define test cases as classes with methods `test_*`.
+
+- `os`  
+  General OS utilities (here not used explicitly in the test code, but harmless).
+
+- `torch`  
+  PyTorch main library.
+
+- `torch.nn as nn`  
+  Neural network building blocks (used for `CrossEntropyLoss`).
+
+- `torch.optim as optim`  
+  Optimizers, like Adam.
+
+- `from torch.utils.data import DataLoader`  
+  PyTorch DataLoader for batching the dataset during training.
+
+- `from tests.test_utils import setup_dummy_data, teardown_dummy_data, ATTRIBUTE_NAMES`  
+  Utilities for tests:
+  - `setup_dummy_data` – creates a small folder with dummy images and a CSV (we saw this earlier).
+  - `teardown_dummy_data` – removes that folder after the test.
+  - `ATTRIBUTE_NAMES` – the standard list of attribute names (theme, sentiment, etc.).
+
+- `from preprocessing.dataset import CustomDataset`  
+  Your Dataset class that reads CSV + images and returns appropriate tensors and labels.
+
+- `from models.fg_mfn import FG_MFN`  
+  The multimodal model class under test.
+
+---
+
+## 2. Test case class
+
+```python
+class TestTrainingLoop(unittest.TestCase):
+```
+
+- Defines a test case class `TestTrainingLoop` that inherits from `unittest.TestCase`.
+- Any method inside this class whose name starts with `test_` will be run as an individual test.
+
+---
+
+## 3. `setUp`: run before each test
+
+```python
+    def setUp(self):
+        self.test_dir = "tests/temp_data_training"
+        self.csv_path, self.image_dir = setup_dummy_data(self.test_dir, multi_attribute=True)
+```
+
+- `setUp` is a special `unittest` method that runs **before every test method** (e.g., before `test_one_epoch_training`).
+
+- `self.test_dir = "tests/temp_data_training"`  
+  Path to a temporary directory where this test’s dummy data will live.
+
+- `self.csv_path, self.image_dir = setup_dummy_data(self.test_dir, multi_attribute=True)`  
+  Calls the helper to:
+
+  - Make a folder structure like:
+    - `tests/temp_data_training/images/` with dummy images.
+    - `tests/temp_data_training/data.csv` with dummy rows.
+  - `multi_attribute=True` means:
+    - Each row in the CSV will have columns for each attribute, e.g.:
+      - `sentiment_num`, `sentiment`, `emotion_num`, `emotion`, etc.
+  - Returns:
+    - `csv_path` – full path to `data.csv`.
+    - `image_dir` – full path to the `images/` folder.
+
+Now `self.csv_path` and `self.image_dir` can be used to construct a `CustomDataset`.
+
+---
+
+### 3.1 Define a minimal multi-attribute config
+
+```python
+        # Multi-attribute config matching model_config.json
+        self.cfg = {
+            "IMAGE_BACKBONE": "resnet50",
+            "TEXT_ENCODER": "bert-base-uncased",
+            "FUSION_TYPE": "concat",
+            "DROPOUT": 0.1,
+            "HIDDEN_DIM": 128,  # Smaller dim for speed
+            "ATTRIBUTES": {
+                "theme": {"num_classes": 10, "labels": ["Food", "Fashion", "Tech", "Health", "Travel", "Finance", "Entertainment", "Sports", "Education", "Other"]},
+                "sentiment": {"num_classes": 3, "labels": ["Positive", "Negative", "Neutral"]},
+                "emotion": {"num_classes": 8, "labels": ["Excitement", "Trust", "Joy", "Fear", "Anger", "Sadness", "Surprise", "Anticipation"]},
+                "dominant_colour": {"num_classes": 10, "labels": ["Red", "Blue", "Green", "Yellow", "Orange", "Purple", "Black", "White", "Brown", "Multi"]},
+                "attention_score": {"num_classes": 3, "labels": ["High", "Medium", "Low"]},
+                "trust_safety": {"num_classes": 3, "labels": ["Safe", "Unsafe", "Questionable"]},
+                "target_audience": {"num_classes": 8, "labels": ["General", "Food Lovers", "Tech Enthusiasts", "Fashionistas", "Parents", "Professionals", "Fitness Enthusiasts", "Students"]},
+                "predicted_ctr": {"num_classes": 3, "labels": ["High", "Medium", "Low"]},
+                "likelihood_shares": {"num_classes": 3, "labels": ["High", "Medium", "Low"]}
+            }
+        }
+```
+
+- This `self.cfg` mimics your real `model_config.json`, but is embedded directly for the test.
+- Keys:
+  - `"IMAGE_BACKBONE": "resnet50"` – the visual backbone to use.
+  - `"TEXT_ENCODER": "bert-base-uncased"` – text encoder.
+  - `"FUSION_TYPE": "concat"` – combine image+text by concatenation.
+  - `"DROPOUT": 0.1` – dropout rate.
+  - `"HIDDEN_DIM": 128` – a smaller hidden dimension than production (for speed in tests).
+  - `"ATTRIBUTES"` – fully describes each attribute:
+    - `num_classes` – how many classes for that head.
+    - `labels` – list of label names.
+
+This config is passed into `FG_MFN` so it will build all attribute heads with the correct class counts.
+
+---
+
+### 3.2 Set device and build the model
+
+```python
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = FG_MFN(self.cfg).to(self.device)
+```
+
+- `self.device` – GPU if available, otherwise CPU.
+
+- `self.model = FG_MFN(self.cfg).to(self.device)`:
+  - Constructs the multimodal model using this small config.
+  - Moves it to the test device.
+
+So before each test:
+
+- Temporary dummy data exists.
+- Model is instantiated and ready.
+
+---
+
+## 4. `tearDown`: run after each test
+
+```python
+    def tearDown(self):
+        teardown_dummy_data(self.test_dir)
+```
+
+- `tearDown` is called after each test method finishes (whether it passed or failed).
+
+- `teardown_dummy_data(self.test_dir)`:
+  - Deletes the entire `tests/temp_data_training` folder (images + CSV).
+  - Ensures tests don’t leave behind temporary junk.
+
+So each test run:
+
+- Creates a fresh temporary dataset in `setUp`.
+- Cleans it up in `tearDown`.
+
+---
+
+## 5. `test_one_epoch_training`: the actual test
+
+```python
+    def test_one_epoch_training(self):
+```
+
+- This is the main test method.  
+- `unittest` will discover and run it automatically (because its name starts with `test_`).
+
+---
+
+### 5.1 Build dataset and dataloader
+
+```python
+        dataset = CustomDataset(self.csv_path, image_dir=self.image_dir)
+        loader = DataLoader(dataset, batch_size=2, shuffle=True)
+```
+
+- `dataset = CustomDataset(self.csv_path, image_dir=self.image_dir)`:
+  - Uses the dummy `data.csv` and dummy images.
+  - Each sample will include:
+    - `"visual"`: image tensor.
+    - `"text"` and `"attention_mask"`: tokenized text.
+    - For each attribute: a numeric label tensor (e.g. `"sentiment"`).
+
+- `loader = DataLoader(dataset, batch_size=2, shuffle=True)`:
+  - Wraps the dataset for mini-batch training:
+    - `batch_size=2` – 2 samples per batch (small to keep test fast).
+    - `shuffle=True` – random order.
+
+Visually:
+
+> Dummy dataset (5 samples) → DataLoader → ~3 batches (2 + 2 + 1) of data.
+
+---
+
+### 5.2 Loss and optimizer
+
+```python
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=1e-4)
+```
+
+- `criterion = nn.CrossEntropyLoss()`:
+  - Standard classification loss.
+
+- `optimizer = optim.Adam(self.model.parameters(), lr=1e-4)`:
+  - Simple Adam optimizer for the model parameters.
+  - Small learning rate.
+
+This mirrors a real training setup but scaled down.
+
+---
+
+### 5.3 Set model to train mode and log header
+
+```python
+        self.model.train()
+        
+        print(f"\n[INFO] Starting Multi-Attribute Training Test...", flush=True)
+```
+
+- `self.model.train()` – ensures dropout/batchnorm behave in training mode.
+
+- Print out an info message (helpful when running tests verbosely).
+
+---
+
+### 5.4 Training loop over batches
+
+```python
+        for i, batch in enumerate(loader):
+            images = batch["visual"].to(self.device)
+            texts = batch["text"].to(self.device)
+            masks = batch["attention_mask"].to(self.device)
+```
+
+- Enumerate each batch from the DataLoader.
+- Extract:
+  - `images` – image tensors, move to device.
+  - `texts` – token IDs, move to device.
+  - `masks` – attention masks, move to device.
+
+---
+
+#### 5.4.1 Forward pass and zero gradients
+
+```python
+            optimizer.zero_grad()
+            outputs = self.model(images, texts, attention_mask=masks)
+```
+
+- `optimizer.zero_grad()` – clear old gradients.
+
+- `outputs = self.model(...)`:
+  - Runs the model forward.
+  - `outputs` is a dictionary, e.g.:
+
+    ```python
+    {
+      "theme": tensor([batch, 10]),
+      "sentiment": tensor([batch, 3]),
+      "emotion": tensor([batch, 8]),
+      ...
+    }
+    ```
+
+Each key corresponds to one attribute head.
+
+---
+
+#### 5.4.2 Compute multi-task loss
+
+```python
+            # Compute multi-task loss
+            total_loss = 0
+            num_attrs = 0
+```
+
+- Initialize total loss and a counter for how many attributes contributed to it.
+
+```python
+            for attr in ATTRIBUTE_NAMES:
+                if attr in outputs and attr in batch:
+                    labels = batch[attr].to(self.device)
+                    loss = criterion(outputs[attr], labels)
+                    total_loss += loss
+                    num_attrs += 1
+```
+
+- Loop through all attributes (`"theme"`, `"sentiment"`, ...):
+
+  - `if attr in outputs and attr in batch:`  
+    Ensures:
+    - The model **has this head**.
+    - The batch **has true labels** for this attribute.
+
+  - `labels = batch[attr].to(self.device)`:
+    - Get ground-truth class indices for this attribute, move to device.
+
+  - `loss = criterion(outputs[attr], labels)`:
+    - Compute cross-entropy for this attribute.
+
+  - Add to `total_loss`, increment `num_attrs`.
+
+This is a **multi-task** loss: for each attribute, you compute a classification loss and then combine them.
+
+---
+
+#### 5.4.3 Assert that at least one attribute contributed
+
+```python
+            self.assertGreater(num_attrs, 0, "No attributes found in outputs or batch")
+```
+
+- Asserts that `num_attrs > 0`.
+
+If `num_attrs == 0`, it means:
+
+- No attribute from `ATTRIBUTE_NAMES` was present in both `outputs` and `batch`.
+
+That would indicate a bug:
+
+- Either the model did not create heads for attributes it should, or
+- The dataset didn’t provide labels for any attribute, or
+- There’s a mismatch in naming.
+
+In that case, the test fails with the message:
+
+> "No attributes found in outputs or batch"
+
+This ensures that **at least one attribute** is properly wired end-to-end.
+
+---
+
+#### 5.4.4 Average loss across attributes, backward, optimizer step
+
+```python
+            total_loss = total_loss / num_attrs
+            
+            total_loss.backward()
+            optimizer.step()
+            
+            print(f"[INFO] Batch {i+1} processed. Loss: {total_loss.item():.4f}", flush=True)
+```
+
+- `total_loss = total_loss / num_attrs`:
+  - Computes the **average** loss per attribute for this batch.
+
+- `total_loss.backward()`:
+  - Backpropagates gradients through the model.
+
+- `optimizer.step()`:
+  - Updates model parameters based on gradients.
+
+- Print out loss info for this batch.
+
+So, the test actually runs a **real training step** on each batch (forward, backward, step).
+
+---
+
+### 5.5 After loop: final message and output check
+
+```python
+        print(f"[INFO] Multi-Attribute Training Test Completed Successfully.", flush=True)
+        
+        # Check that we have all expected outputs
+        self.assertEqual(len(outputs), len(ATTRIBUTE_NAMES), "Model should output all attributes")
+```
+
+- After finishing all batches:
+  - Print that the training test completed.
+
+- Then assert that the number of keys in `outputs` equals the number of entries in `ATTRIBUTE_NAMES`.
+
+  - `len(outputs)` – how many attribute heads the model actually produced logits for.
+  - `len(ATTRIBUTE_NAMES)` – how many attributes we expect.
+
+If they’re not equal, the test fails with:
+
+> "Model should output all attributes"
+
+This checks:
+
+> The model is correctly configured with a head for each attribute name in `ATTRIBUTE_NAMES`.
+
+Note: `outputs` here is from the **last batch** processed. That’s enough to inspect its structure.
+
+---
+
+## 6. Test runner
+
+```python
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- If this file is run directly, Python’s unittest runner is invoked.
+- It will:
+  - Discover `TestTrainingLoop`.
+  - Run `setUp` → `test_one_epoch_training` → `tearDown`.
+  - Print test results.
+
+---
+
+## Visual summary of what this test ensures
+
+You can think of the test as a **miniature training run** with synthetic data:
+
+```text
+setUp:
+  ├─ Create dummy folder: tests/temp_data_training
+  ├─ Generate 5 fake "document" images with text
+  ├─ Generate data.csv with random multi-attribute labels
+  └─ Build FG_MFN model with a small HIDDEN_DIM=128 and all attribute heads
+
+test_one_epoch_training:
+  ├─ Wrap data.csv + images in CustomDataset
+  ├─ Create DataLoader (batch_size=2)
+  ├─ For each batch:
+  │    ├─ Move images + text tensors to device
+  │    ├─ Forward pass: model(images, texts, masks) → outputs dict
+  │    ├─ For every attribute:
+  │    │     ├─ If model outputs it and batch has labels:
+  │    │     └─ Compute CrossEntropyLoss and add to total_loss
+  │    ├─ Assert: at least one attribute contributed to loss
+  │    ├─ Average loss across attributes
+  │    └─ Backward + optimizer.step()
+  └─ Assert: model outputs as many keys as ATTRIBUTE_NAMES
+
+tearDown:
+  └─ Delete tests/temp_data_training folder
+```
+
+So this test gives you confidence that:
+
+- The model and dataset **agree** on attribute naming and shapes.
+- You can compute a multi-head loss and run backprop without errors.
+- All attribute heads are present and producing logits.
+
+If you’d like, I can next show how to add a similar test for the **prediction** path (using `server/predict.py`) to ensure OCR + model inference runs end-to-end on these dummy images.

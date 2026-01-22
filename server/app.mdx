@@ -1,0 +1,652 @@
+This file turns your trained model into a **web API** using FastAPI.  
+It lets a client upload images and get back predictions (with OCR text, labels, confidence, etc.).
+
+I’ll walk through it section by section, explaining what each part does and how a request flows through.
+
+---
+
+## 1. Imports
+
+```python
+import os
+import shutil
+import logging
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from typing import List
+from PIL import Image
+import uuid
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
+
+from server.predict import predict, IMAGE_UPLOAD_DIR
+from utils.path import LOG_DIR
+```
+
+- `os` – for working with file paths and directories.
+- `shutil` – for copying file objects; used to save uploaded files.
+- `logging` – for writing log messages (info, errors) to a file.
+- `from fastapi import ...` – FastAPI components:
+  - `FastAPI` – creates the web application.
+  - `UploadFile` – represents an uploaded file.
+  - `File` – indicates a request body parameter is a file upload.
+  - `HTTPException` – to return error responses (e.g., 400, 500).
+- `from typing import List` – for type hints (a list of files, etc.).
+- `from PIL import Image` – Pillow library; used to open images in Python.
+- `uuid` – used to generate unique filenames so uploaded files don’t collide.
+- `from pydantic import BaseModel` – base class for defining data schemas (for request/response validation).
+- `from fastapi.middleware.cors import CORSMiddleware` – CORS middleware; controls which frontends can call your API.
+
+- `from server.predict import predict, IMAGE_UPLOAD_DIR`  
+  Imports:
+  - `predict` – your own function that runs OCR + model prediction on images.
+  - `IMAGE_UPLOAD_DIR` – directory where uploaded images are temporarily stored.
+
+- `from utils.path import LOG_DIR` – directory where logs should be written.
+
+---
+
+## 2. Basic configuration
+
+```python
+# ------------------ CONFIG ------------------
+ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png"]
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(IMAGE_UPLOAD_DIR, exist_ok=True)
+```
+
+- `ALLOWED_EXTENSIONS = ["jpg", "jpeg", "png"]`  
+  The file types you accept for image uploads.
+
+- `os.makedirs(LOG_DIR, exist_ok=True)`  
+  Ensure the log directory exists; create it if needed.
+
+- `os.makedirs(IMAGE_UPLOAD_DIR, exist_ok=True)`  
+  Ensure the image upload directory exists; create it if needed.
+
+So the environment is ready for:
+
+- Logging to a file.
+- Saving uploaded images temporarily.
+
+---
+
+## 3. Logging setup
+
+```python
+# ------------------ LOGGING ------------------
+logging.basicConfig(
+    filename=os.path.join(LOG_DIR, "server.log"),
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+```
+
+This configures the global logging system:
+
+- `filename=os.path.join(LOG_DIR, "server.log")`  
+  All log messages will be written to `server.log` inside `LOG_DIR`.
+
+- `level=logging.INFO`  
+  Log messages of level INFO and above (INFO, WARNING, ERROR, CRITICAL).
+
+- `format="%(asctime)s - %(levelname)s - %(message)s"`  
+  Each log line includes:
+  - Timestamp
+  - Log level
+  - The actual message
+
+Example log line:
+
+```text
+2026-01-22 11:00:00,123 - INFO - Predictions made for 3 images.
+```
+
+---
+
+## 4. Creating the FastAPI app
+
+```python
+# ------------------ FASTAPI APP ------------------
+app = FastAPI(title="Multi-Modal Sentiment Classifier API")
+```
+
+- Creates a FastAPI application instance called `app`.
+- `title` gives the API a human-friendly name, shown in docs (e.g., Swagger UI).
+
+Think of `app` as the central object that will hold all your endpoints.
+
+---
+
+## 5. CORS middleware
+
+```python
+# === CORS ===
+origins = [
+    "http://127.0.0.1:5500",
+    "http://localhost:5500"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+### What is CORS?
+
+CORS (Cross-Origin Resource Sharing) controls which web pages (frontends) are allowed to make requests to your API.
+
+- `origins` – list of allowed frontend URLs:
+  - `"http://127.0.0.1:5500"`
+  - `"http://localhost:5500"`
+  These are typical for a local HTML/JS frontend served by a dev server.
+
+`app.add_middleware(...)` adds CORS handling:
+
+- `allow_origins=origins`  
+  Only these origins are allowed to access.
+
+- `allow_credentials=True`  
+  Allows cookies / authentication headers.
+
+- `allow_methods=["*"]`  
+  Allow all HTTP methods (GET, POST, etc.).
+
+- `allow_headers=["*"]`  
+  Allow all custom headers.
+
+This ensures your frontend (running at those addresses) can call the API without browser security blocking it.
+
+---
+
+## 6. Response models (Pydantic)
+
+```python
+# ------------------ Pydantic Models ------------------
+class Prediction(BaseModel):
+    filename: str
+    predicted_label_text: str
+    predicted_label_num: int
+    confidence_score: float
+    ocr_text: str
+
+class PredictionResponse(BaseModel):
+    predictions: List[Prediction]
+```
+
+These classes define the **shape of the JSON responses** the API returns.
+
+### `class Prediction(BaseModel)`
+
+Represents one prediction for one image:
+
+- `filename: str`  
+  The original filename the user uploaded (e.g., `"image1.png"`).
+
+- `predicted_label_text: str`  
+  The human-readable label the model predicted (e.g., `"positive"`).
+
+- `predicted_label_num: int`  
+  The numeric class index (e.g., `2`).
+
+- `confidence_score: float`  
+  Model’s confidence for this prediction (e.g., 0.93).
+
+- `ocr_text: str`  
+  The text extracted from the image via OCR.
+
+FastAPI uses this to:
+- Validate that your code returns the right shape.
+- Auto-generate OpenAPI documentation.
+
+### `class PredictionResponse(BaseModel)`
+
+Represents the overall response:
+
+- `predictions: List[Prediction]`  
+  A list of `Prediction` items (one per uploaded image).
+
+So the JSON response from `/predict` will look like:
+
+```json
+{
+  "predictions": [
+    {
+      "filename": "img1.jpg",
+      "predicted_label_text": "positive",
+      "predicted_label_num": 2,
+      "confidence_score": 0.94,
+      "ocr_text": "some text..."
+    },
+    {
+      "filename": "img2.png",
+      "predicted_label_text": "negative",
+      "predicted_label_num": 0,
+      "confidence_score": 0.88,
+      "ocr_text": "more text..."
+    }
+  ]
+}
+```
+
+---
+
+## 7. Utility functions
+
+### 7.1 Check allowed file types
+
+```python
+# ------------------ UTILITY ------------------
+def allowed_file(filename):
+    return any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS)
+```
+
+- `allowed_file(filename)` returns `True` if the filename ends with any of the allowed extensions (`"jpg"`, `"jpeg"`, `"png"`), case-insensitive.
+
+Implementation:
+
+- `filename.lower().endswith(ext)` – checks each extension.
+- `any(...)` – returns True if **any** of the checks is True.
+
+This is a quick way to screen filenames, though in practice the code uses a slightly different check in `save_upload_file`.
+
+---
+
+### 7.2 Save uploaded file to disk
+
+```python
+def save_upload_file(upload_file: UploadFile, dest_folder: str) -> str:
+    ext = os.path.splitext(upload_file.filename)[1].lower()
+    if ext not in [".jpg", ".jpeg", ".png"]:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
+    unique_name = f"{uuid.uuid4().hex}{ext}"
+    file_path = os.path.join(dest_folder, unique_name)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(upload_file.file, buffer)
+    return file_path
+```
+
+This function:
+
+1. Validates the file extension.
+2. Generates a unique filename.
+3. Saves the uploaded file to the `dest_folder`.
+
+Step by step:
+
+- `ext = os.path.splitext(upload_file.filename)[1].lower()`  
+  - Splits the filename into (root, extension).
+  - Takes the extension (`".jpg"`, `".png"`, etc.), converts to lowercase.
+
+- `if ext not in [".jpg", ".jpeg", ".png"]:`  
+  - If the extension is not allowed, raise an HTTP 400 error:
+
+    ```python
+    raise HTTPException(status_code=400, detail=f"Unsupported file type: {ext}")
+    ```
+
+  This sends an error response back to the client.
+
+- `unique_name = f"{uuid.uuid4().hex}{ext}"`  
+  - Generates a unique ID (UUID), converts it to a hex string.
+  - Appends the original extension.  
+  - Example: `"a3f9d7e4c8...".jpg`
+
+  This avoids filename collisions between different uploads.
+
+- `file_path = os.path.join(dest_folder, unique_name)`  
+  - Combines the destination folder and the unique filename into a full path.
+
+- Save the file:
+
+  ```python
+  with open(file_path, "wb") as buffer:
+      shutil.copyfileobj(upload_file.file, buffer)
+  ```
+
+  - Opens a new file in binary write mode.
+  - `shutil.copyfileobj` copies data from the uploaded file object to the new file.
+
+- `return file_path`  
+  - Returns the path to the saved file.
+
+Visually:
+
+> Browser uploads image → FastAPI receives `UploadFile` → `save_upload_file` validates and saves it → returns local path like `uploads/1a2b3c4d5e.jpg`.
+
+---
+
+## 8. The `/predict` endpoint
+
+```python
+# ------------------ PREDICT ENDPOINT ------------------
+@app.post("/predict", response_model=PredictionResponse)
+async def predict_endpoint(files: List[UploadFile] = File(...)):
+```
+
+- `@app.post("/predict", response_model=PredictionResponse)`  
+  Defines a **POST** endpoint at the path `/predict`.
+
+  - `response_model=PredictionResponse` tells FastAPI:
+    - The endpoint should return data matching the `PredictionResponse` model.
+    - It will validate and also produce documentation accordingly.
+
+- `async def predict_endpoint(files: List[UploadFile] = File(...)):`  
+  - Defines the handler function.
+  - `files: List[UploadFile] = File(...)` means:
+    - This endpoint expects a field named `files` in the multipart form data.
+    - The client can upload **multiple files**.
+    - Each file is of type `UploadFile`.
+
+So the client sends a POST request with 1+ image files attached as `files`.
+
+---
+
+### 8.1 Check if files were provided
+
+```python
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+```
+
+- If the client sends no files, respond with a 400 Bad Request and a clear error message.
+
+---
+
+### 8.2 Prepare containers
+
+```python
+    images = []
+    filenames = []
+    uploaded_paths = []
+```
+
+- `images` – will hold PIL `Image` objects (parsed from files).
+- `filenames` – will hold the **original filenames** as provided by the client.
+- `uploaded_paths` – will hold the full paths to where we saved the uploads, so we can delete them later.
+
+---
+
+### 8.3 Try block: main logic
+
+```python
+    try:
+        # Save uploaded files temporarily
+        for file in files:
+            file_path = save_upload_file(file, IMAGE_UPLOAD_DIR)
+            uploaded_paths.append(file_path)
+            img = Image.open(file_path).convert("RGB")
+            images.append(img)
+            filenames.append(file.filename)
+```
+
+Step by step:
+
+1. Loop over each uploaded file:
+
+   ```python
+   for file in files:
+   ```
+
+2. `file_path = save_upload_file(file, IMAGE_UPLOAD_DIR)`  
+   - Validate file extension.
+   - Save the file to the upload directory with a unique name.
+   - Get the full file path.
+
+3. `uploaded_paths.append(file_path)`  
+   - Remember this path so we can delete the file later in the `finally` block.
+
+4. `img = Image.open(file_path).convert("RGB")`  
+   - Open the file as a PIL image.
+   - `.convert("RGB")` ensures it’s an RGB image (3 color channels).
+
+5. `images.append(img)`  
+   - Add the PIL image to the `images` list.
+
+6. `filenames.append(file.filename)`  
+   - Store the original filename (not the unique internal name), so we can include it in the response.
+
+Now we have:
+
+- `images`: list of PIL images.
+- `filenames`: list of original names.
+- `uploaded_paths`: list of temporary file paths.
+
+---
+
+### 8.4 Run the prediction function
+
+```python
+        # Run predictions (OCR + sentiment)
+        results = predict(images)
+```
+
+- Calls the imported `predict` function from `server.predict`.
+
+- `predict(images)` is expected to:
+  - Take a list of PIL images.
+  - For each image:
+    - Possibly run OCR.
+    - Run the multimodal model to get a sentiment/label and confidence.
+  - Return a list of result dictionaries, one per image.
+
+Each `res` in `results` should contain keys like:
+- `predicted_label_text`
+- `predicted_label_num`
+- `confidence_score`
+- `ocr_text`
+(and you’re about to add `filename` to each).
+
+---
+
+### 8.5 Attach original filenames to each result
+
+```python
+        # Attach filenames to results
+        for i, res in enumerate(results):
+            res["filename"] = filenames[i]
+```
+
+- Loop over `results` with their index `i`.
+- `res["filename"] = filenames[i]`  
+  - Adds a `"filename"` field to each result dict, using the original filename from the upload.
+
+This ensures the client can see which prediction corresponds to which uploaded file.
+
+---
+
+### 8.6 Log success and return response
+
+```python
+        logging.info(f"Predictions made for {len(images)} images.")
+        return {"predictions": results}
+```
+
+- Logs an INFO message with how many images were processed.
+
+- Returns a dictionary:
+
+  ```python
+  {"predictions": results}
+  ```
+
+  Since the endpoint’s `response_model` is `PredictionResponse`, FastAPI will:
+
+  - Validate that this dict fits the model (has a `predictions` field that is a list of `Prediction`).
+  - Convert it to JSON for the HTTP response.
+
+---
+
+### 8.7 Error handling
+
+```python
+    except Exception as e:
+        logging.error(f"Error during prediction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+```
+
+- If anything inside the `try` block throws an exception:
+  - Log the error with `logging.error(...)`.
+  - Raise an `HTTPException` with status code 500 (Internal Server Error) and an error message.
+
+The client receives a JSON error response instead of the server silently failing.
+
+---
+
+### 8.8 Finally block: cleanup temporary files
+
+```python
+    finally:
+        # Delete only files uploaded in this request
+        for file_path in uploaded_paths:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+```
+
+- The `finally` block runs **no matter what**:
+  - Whether the try succeeded or the except caught an error.
+
+- It loops over `uploaded_paths` and deletes each file if it still exists.
+
+This ensures:
+
+- Uploaded images are not left on disk permanently.
+- Each request cleans up its temporary files.
+
+Visually:
+
+```text
+Client uploads images
+   │
+   ▼
+Server saves images temporarily
+   │
+   ▼
+Run predict() on them
+   │
+   ▼
+Return predictions
+   │
+   ▼
+Delete temp image files
+```
+
+---
+
+## 9. Health check endpoint
+
+```python
+# ------------------ HEALTH CHECK ------------------
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "message": "API is running"}
+```
+
+- Defines a **GET** endpoint at `/health`.
+
+- `def health_check():`  
+  - Called when the client sends GET /health.
+
+- Returns a JSON object:
+
+  ```json
+  {
+    "status": "ok",
+    "message": "API is running"
+  }
+  ```
+
+This is useful for:
+
+- Monitoring systems to check if the API is alive.
+- Quick manual checks (via browser or curl/postman).
+
+---
+
+## 10. Run server from command line
+
+```python
+# # ------------------ RUN SERVER ------------------
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "server.app:app",
+        port=8000,
+        reload=True
+    )
+```
+
+- `if __name__ == "__main__":`  
+  This block runs only if you execute this file directly:
+
+  ```bash
+  python server/app.py
+  ```
+
+- `import uvicorn`  
+  Uvicorn is an ASGI server; it runs your FastAPI app.
+
+- `uvicorn.run("server.app:app", port=8000, reload=True)`:
+
+  - `"server.app:app"`  
+    - Tells Uvicorn where the FastAPI app is located:
+      - Module: `server.app`
+      - Variable: `app`
+  - `port=8000`  
+    - The API will be served at `http://127.0.0.1:8000`.
+  - `reload=True`  
+    - In development, this automatically restarts the server when you change the code.
+
+So you can run:
+
+```bash
+python server/app.py
+```
+
+Then go to:
+
+- `http://127.0.0.1:8000/docs` → interactive API documentation (Swagger UI).
+- `http://127.0.0.1:8000/health` → see if it returns `{"status": "ok", ...}`.
+- POST `/predict` with images via your frontend or a tool like Postman.
+
+---
+
+### End-to-end request lifecycle
+
+Putting it all together, a typical prediction request does:
+
+```text
+Client   →   POST /predict with multiple image files
+              │
+              ▼
+          FastAPI receives files
+              │
+              ▼
+          save_upload_file: validate extension, save each to disk
+              │
+              ▼
+          Open as PIL images; collect original filenames
+              │
+              ▼
+          predict(images): run OCR + model inference
+              │
+              ▼
+          Attach original filenames to each prediction
+              │
+              ▼
+          Log: "Predictions made for X images."
+              │
+              ▼
+          Return JSON: {"predictions": [ ... one per image ... ]}
+              │
+              ▼
+          finally: delete temporary image files
+```
+
+If you want, I can:
+
+- Sketch what `server.predict.predict` likely looks like and how it uses your `FG_MFN` model and preprocessing.
+- Or show an example `curl`/JavaScript snippet for calling this `/predict` endpoint from a frontend.

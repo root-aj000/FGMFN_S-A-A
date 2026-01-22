@@ -1,0 +1,787 @@
+This script is a **dataset preparation tool**.  
+It takes a folder of **raw images**, runs **OCR** to read text from each image, attaches **random labels** (for demo/testing), copies the images into a clean structure, and writes out **train/val/test CSV files** that your whole pipeline can use.
+
+I’ll walk through it from top to bottom, explaining what each part does and how the data flows.
+
+---
+
+## 1. Imports
+
+```python
+import os
+import csv
+import random
+import logging
+import traceback
+from concurrent.futures import ThreadPoolExecutor
+from sklearn.model_selection import train_test_split
+from paddlex import create_pipeline
+from PIL import Image
+from utils.path import *
+```
+
+- `os` – work with directories and file paths.
+- `csv` – read/write CSV files.
+- `random` – generate random numbers (used here to assign random labels).
+- `logging` – log messages to a file and console.
+- `traceback` – get full error stack traces for logging.
+- `ThreadPoolExecutor` – imported but not actually used (the code uses sequential processing).
+- `train_test_split` – from scikit-learn; splits data into train/val/test sets.
+- `create_pipeline` – from PaddleX; used to create an OCR pipeline.
+- `Image` – from Pillow; open and handle images.
+- `from utils.path import *` – imports directory paths (like `RAW_DATA_DIR`, `PROCESSED_DATA_DIR`, `LOG_DIR`) from a central config.
+
+---
+
+## 2. Path configuration
+
+```python
+# ---------------- PATH CONFIG ---------------- #
+RAW_DATA_DIR = RAW_DATA_DIR
+PROCESSED_DATA_DIR = PROCESSED_DATA_DIR
+IMAGE_OUTPUT_DIR = os.path.join(PROCESSED_DATA_DIR, "images")  # store images here
+LOG_DIR = LOG_DIR
+```
+
+- These lines essentially **re-assign** the imported global constants to local module variables with the same names:
+
+  - `RAW_DATA_DIR` – folder where your **raw images** are stored.
+  - `PROCESSED_DATA_DIR` – folder where **CSV files** and other processed outputs will go.
+  - `IMAGE_OUTPUT_DIR` – a subfolder inside `PROCESSED_DATA_DIR` where **processed images** are stored (renamed copies).
+  - `LOG_DIR` – folder where logs should be written.
+
+This doesn’t change the values, just makes it explicit that this script uses those paths.
+
+```python
+# Create directories
+for directory in [RAW_DATA_DIR, PROCESSED_DATA_DIR, IMAGE_OUTPUT_DIR, LOG_DIR]:
+    os.makedirs(directory, exist_ok=True)
+```
+
+- Ensures all necessary directories exist:
+  - Raw data folder
+  - Processed output folder
+  - Processed images subfolder
+  - Log folder
+
+`exist_ok=True` means “create if missing; don’t error if already there.”
+
+Think:
+
+> Prepare the filesystem: make sure all the folders we’ll use exist.
+
+---
+
+## 3. Dataset split settings
+
+```python
+# ---------------- SETTINGS ---------------- #
+TEST_SPLIT = 0.1
+VAL_SPLIT = 0.1
+```
+
+- `TEST_SPLIT = 0.1` – 10% of the data will go to **test** set.
+- `VAL_SPLIT = 0.1` – 10% of the remaining training/validation pool will be validation.
+
+Concretely, if you had 100 valid samples:
+
+- First, 10 go to test, 90 remain.
+- Then 10% of the 90 (9) go to val, 81 to train.
+- Final approx: 81 train, 9 val, 10 test.
+
+---
+
+## 4. Logging setup
+
+```python
+# ---------------- LOGGING ---------------- #
+log_file_path = os.path.join(LOG_DIR, "dataset_prep.log")
+logging.basicConfig(
+    filename=log_file_path,
+    level=logging.INFO,
+    format="%(message)s",
+    force=True
+)
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+```
+
+- `log_file_path` – path to a log file, e.g. `.../logs/dataset_prep.log`.
+
+- `logging.basicConfig(...)` – configures logging:
+  - `filename=log_file_path` – write messages to this file.
+  - `level=logging.INFO` – record INFO and above (INFO, WARNING, ERROR).
+  - `format="%(message)s"` – simple format: only the message itself.
+  - `force=True` – override any prior logging setup.
+
+- `logger = logging.getLogger()` – get root logger.
+- `logger.setLevel(logging.INFO)` – ensure level is INFO.
+
+```python
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter("%(message)s"))
+logger.addHandler(console_handler)
+```
+
+- Adds a console handler:
+  - Logs will also be printed to stdout (terminal).
+  - Same message-only format.
+
+Result:
+
+> Messages are logged both to the file `dataset_prep.log` and to the console.
+
+```python
+log_info = lambda msg: (logger.info(msg), print(msg, flush=True))
+log_error = lambda msg: (logger.error(msg), print(msg, flush=True))
+```
+
+- Defines two convenience functions:
+  - `log_info(msg)` – log at INFO level and print to console.
+  - `log_error(msg)` – log at ERROR level and print to console.
+
+They make it easy to log messages throughout the code.
+
+---
+
+## 5. OCR model initialization
+
+```python
+# ---------------- OCR MODEL ---------------- #
+ocr_model = create_pipeline(pipeline="ocr")
+```
+
+- Creates an OCR pipeline using PaddleX with `pipeline="ocr"`.
+- `ocr_model` can be called like `ocr_model.predict(image_path)` to get recognized text from an image.
+
+This is your “reading text from pictures” engine.
+
+---
+
+## 6. Attribute configuration
+
+```python
+# ---------------- ATTRIBUTE CONFIGURATION ---------------- #
+# These must match the model_config.json
+ATTRIBUTE_LABELS = {
+    "theme": ["Food", "Fashion", "Tech", "Health", "Travel", "Finance", "Entertainment", "Sports", "Education", "Other"],
+    "sentiment": ["Positive", "Negative", "Neutral"],
+    "emotion": ["Excitement", "Trust", "Joy", "Fear", "Anger", "Sadness", "Surprise", "Anticipation"],
+    "dominant_colour": ["Red", "Blue", "Green", "Yellow", "Orange", "Purple", "Black", "White", "Brown", "Multi"],
+    "attention_score": ["High", "Medium", "Low"],
+    "trust_safety": ["Safe", "Unsafe", "Questionable"],
+    "target_audience": ["General", "Food Lovers", "Tech Enthusiasts", "Fashionistas", "Parents", "Professionals", "Fitness Enthusiasts", "Students"],
+    "predicted_ctr": ["High", "Medium", "Low"],
+    "likelihood_shares": ["High", "Medium", "Low"]
+}
+```
+
+- `ATTRIBUTE_LABELS` maps each attribute to its list of possible **human-readable labels**.
+
+These must match your `model_config.json` so the model’s heads and dataset labels align.
+
+Examples:
+
+- `sentiment`: 3 labels – `"Positive"`, `"Negative"`, `"Neutral"`.
+- `dominant_colour`: 10 labels – `"Red"`, `"Blue"`, `"Green"`, ...
+
+```python
+ATTRIBUTE_NAMES = list(ATTRIBUTE_LABELS.keys())
+```
+
+- `ATTRIBUTE_NAMES` becomes a list of attribute keys:
+  - `["theme", "sentiment", "emotion", ...]`
+
+Used for consistent iteration over attributes.
+
+---
+
+## 7. CSV column headers
+
+```python
+# CSV Headers - all columns
+CSV_HEADERS = [
+    "image_path", "text", "score",
+    # Trainable attributes (label + num)
+    "theme", "theme_num",
+    "sentiment", "sentiment_num", 
+    "emotion", "emotion_num",
+    "dominant_colour", "dominant_colour_num",
+    "attention_score", "attention_score_num",
+    "trust_safety", "trust_safety_num",
+    "target_audience", "target_audience_num",
+    "predicted_ctr", "predicted_ctr_num",
+    "likelihood_shares", "likelihood_shares_num",
+    # Text-extracted fields
+    "keywords", "monetary_mention", "call_to_action", "object_detected",
+    # Original path for reference
+    "original_image"
+]
+```
+
+This defines the column order for the CSV files.
+
+Columns:
+
+- `"image_path"` – the processed image filename (after copying/renaming).
+- `"text"` – OCR text extracted from the image.
+- `"score"` – OCR confidence score (average of per-segment scores).
+
+Then for each attribute, you have:
+
+- Text label column: e.g. `"sentiment"` – `"Positive"`, `"Negative"`, …
+- Numeric label column: e.g. `"sentiment_num"` – 0, 1, 2 …
+
+Then text-derived fields (currently placeholders):
+
+- `"keywords"` – keywords extracted from text (currently empty).
+- `"monetary_mention"` – price or discount (currently `"None"`).
+- `"call_to_action"` – marketing call-to-action (currently `"None"`).
+- `"object_detected"` – rough object class (currently `"General"`).
+
+And finally:
+
+- `"original_image"` – full path to the original raw image (for traceability).
+
+---
+
+## 8. Helper: check if an image is valid
+
+```python
+def is_valid_image(file_path):
+    try:
+        with Image.open(file_path) as img:
+            img.verify()
+        return True
+    except:
+        return False
+```
+
+- Attempts to open the file as an image with PIL and call `img.verify()`:
+  - `verify()` checks if the image is not corrupted.
+
+- If this succeeds: return `True`.
+- If any exception occurs (file damaged, wrong format): return `False`.
+
+Used to filter out broken or unreadable images.
+
+---
+
+## 9. OCR extraction function
+
+```python
+def extract_text(image_path):
+    try:
+        result = list(ocr_model.predict(image_path))
+```
+
+- Calls the OCR pipeline: `ocr_model.predict(image_path)`.
+- Converts result to a list.
+
+PaddleX may return results in slightly different formats, so the function handles:
+
+- List of dicts
+- Single dict
+- Different keys (`"rec_texts"`, `"rec_scores"`, `"data"`, etc.)
+
+```python
+        rec_texts = []
+        rec_scores = []
+```
+
+- Will store recognized text segments and their confidence scores.
+
+### Handling different OCR result structures
+
+```python
+        if isinstance(result, list) and result and isinstance(result[0], dict):
+            if "rec_texts" in result[0]:
+                rec_texts = result[0]["rec_texts"]
+                rec_scores = result[0].get("rec_scores", [])
+            elif "data" in result[0]:
+                for item in result[0]["data"]:
+                    if isinstance(item, dict) and "text" in item:
+                        rec_texts.append(item["text"])
+                        rec_scores.append(item.get("score", None))
+        elif isinstance(result, dict):
+            if "rec_texts" in result:
+                rec_texts = result["rec_texts"]
+                rec_scores = result.get("rec_scores", [])
+            elif "data" in result:
+                for item in result["data"]:
+                    if isinstance(item, dict) and "text" in item:
+                        rec_texts.append(item["text"])
+                        rec_scores.append(item.get("score", None))
+```
+
+This is defensive parsing:
+
+- If `result` is a list and first element is a dict:
+  - If `rec_texts` key exists:
+    - Use `result[0]["rec_texts"]` and `["rec_scores"]`.
+  - Else, if `data` key exists:
+    - Loop over `result[0]["data"]` and collect `item["text"]` and `item["score"]` if present.
+
+- Else if `result` is a dict:
+  - Similar logic: first try `rec_texts`, then fallback to `data` list.
+
+This supports multiple possible OCR output formats.
+
+---
+
+### Combine text and compute average score
+
+```python
+        text = " ".join(rec_texts).strip()
+        valid_scores = [s for s in rec_scores if s is not None]
+        avg_score = sum(valid_scores) / len(valid_scores) if valid_scores else 0.0
+```
+
+- `text` – join all text segments with spaces → one combined string, trimmed.
+
+- `valid_scores` – filter out `None` scores.
+- `avg_score` – average of all numeric scores, or 0.0 if none.
+
+```python
+        if not text:
+            log_error(f"No text recognized for {image_path}")
+            return None
+```
+
+- If OCR didn’t recognize any text (empty string):
+  - Log an error.
+  - Return `None`.
+
+```python
+        return text, avg_score
+    except Exception as e:
+        log_error(f"OCR Failed for {image_path}: {str(e)}\n{traceback.format_exc()}")
+        return None
+```
+
+- Any exception in this process:
+  - Log the error and its full stack trace.
+  - Return `None`.
+
+So:
+
+> `extract_text(image_path)` → returns `(text, avg_score)` or `None` if OCR fails or gives no text.
+
+---
+
+## 10. Random label generator (for demo)
+
+```python
+def generate_random_labels():
+    """Generate random labels for all attributes (for initial dataset creation).
+    
+    NOTE: In production, you should manually label your data instead of using random labels.
+    This function is provided for demonstration/testing purposes.
+    """
+    labels = {}
+    for attr, label_list in ATTRIBUTE_LABELS.items():
+        idx = random.randint(0, len(label_list) - 1)
+        labels[attr] = label_list[idx]
+        labels[f"{attr}_num"] = idx
+    return labels
+```
+
+- For each attribute in `ATTRIBUTE_LABELS`:
+  - Choose a random index `idx` within the label list.
+  - `labels[attr]` = human label string (e.g. `"Positive"`).
+  - `labels[f"{attr}_num"]` = numeric index (e.g. `0`, `1`, `2`).
+
+Returns a dict like:
+
+```python
+{
+  "sentiment": "Negative",
+  "sentiment_num": 1,
+  "theme": "Tech",
+  "theme_num": 2,
+  ...
+}
+```
+
+Important:
+
+> This is **only for demonstration / testing**.  
+> Real training should use manually labeled CSVs.
+
+---
+
+## 11. CSV saving helper
+
+```python
+def save_csv(csv_path, rows):
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
+        writer.writeheader()
+        writer.writerows(rows)
+    log_info(f"Saved CSV: {csv_path}")
+```
+
+- `rows` is a list of dictionaries, each representing a sample (image) with all CSV columns.
+- This function:
+  - Opens the target CSV file for writing.
+  - Creates a `DictWriter` with `CSV_HEADERS` as the column order.
+  - Writes the header row.
+  - Writes all rows.
+  - Logs that the CSV was saved.
+
+Used for `train.csv`, `val.csv`, and `test.csv`.
+
+---
+
+## 12. Process a split (train/val/test)
+
+```python
+def process_split(split_data, split_label, start_index):
+    rows = []
+    for idx, sample in enumerate(split_data, start=start_index):
+        new_filename = f"{split_label}_{idx:04d}.jpg"
+        dest_path = os.path.join(IMAGE_OUTPUT_DIR, new_filename)
+```
+
+- `split_data` – list of sample dicts for this split.
+- `split_label` – `"train"`, `"val"`, or `"test"`.
+- `start_index` – starting index for naming images (to avoid collisions across splits).
+
+For each sample:
+
+- `idx` – index starting from `start_index`.
+- `new_filename` – e.g. `train_0001.jpg`, `train_0002.jpg` or `val_0010.jpg`.
+- `dest_path` – full path in `IMAGE_OUTPUT_DIR` where processed image will be saved.
+
+```python
+        try:
+            log_info(f"Processing image: {sample['original_image']}")
+            with Image.open(sample['original_image']) as img:
+                img.convert("RGB").save(dest_path, "JPEG")
+        except Exception as e:
+            log_error(f"Error copying {sample['original_image']}: {e}")
+            continue
+```
+
+- Open the original image.
+- Convert to RGB.
+- Save it as JPEG at `dest_path`.
+
+If anything goes wrong:
+
+- Log an error.
+- Skip this sample.
+
+```python
+        # Update image path to new filename
+        row = sample.copy()
+        row["image_path"] = new_filename
+        rows.append(row)
+    return rows
+```
+
+- Copy the sample dict.
+- Update `"image_path"` to the **new filename** (not the original path).
+- Append to `rows`.
+
+After going through all samples:
+
+- Return the list of updated rows for this split.
+
+So:
+
+> For `train` split, this function:
+> - Copies images to consistent names inside `IMAGE_OUTPUT_DIR`.
+> - Returns rows with updated `"image_path"` field.
+
+---
+
+## 13. Main function: `prepare_dataset()`
+
+```python
+def prepare_dataset():
+    log_info("Scanning for images...")
+    image_files = [
+        os.path.join(RAW_DATA_DIR, f)
+        for f in os.listdir(RAW_DATA_DIR)
+        if os.path.isfile(os.path.join(RAW_DATA_DIR, f))
+    ]
+    log_info(f"Found {len(image_files)} images.")
+```
+
+- Logs that it’s scanning for images.
+- Creates a list of file paths under `RAW_DATA_DIR` that are files (ignoring subdirectories).
+- Logs how many images it found.
+
+---
+
+### 13.1 Process each image
+
+```python
+    data_samples = []
+
+    def process_image(img_path):
+        if not is_valid_image(img_path):
+            log_error(f"Invalid or unreadable image: {img_path}")
+            return None
+```
+
+- `data_samples` – will store sample dicts for images that successfully produce text.
+
+- `process_image(img_path)` – nested function to process a single image.
+
+First, validate:
+
+- If `is_valid_image` is False:
+  - Log error.
+  - Return `None` (skip).
+
+```python
+        result = extract_text(img_path)
+        if result:
+            text, score = result
+```
+
+- Call `extract_text`.
+- If it returns a tuple:
+  - `text` – OCR text.
+  - `score` – OCR confidence.
+
+If `result` is `None`, skip this image.
+
+```python
+            # Generate random labels (REPLACE WITH MANUAL LABELING IN PRODUCTION)
+            labels = generate_random_labels()
+            
+            sample = {
+                "image_path": None,  # Will be set during split processing
+                "text": text,
+                "score": score,
+                "original_image": img_path,
+                # Text-extracted fields (placeholder - replace with actual extraction)
+                "keywords": "",
+                "monetary_mention": "None",
+                "call_to_action": "None",
+                "object_detected": "General",
+            }
+            sample.update(labels)
+            return sample
+        else:
+            return None
+```
+
+- `labels = generate_random_labels()` – random attributes.
+
+- Build a `sample` dict:
+
+  - `"image_path": None` – placeholder (will be filled later).
+  - `"text": text` – OCR text.
+  - `"score": score` – OCR average confidence.
+  - `"original_image": img_path` – full path to the original file.
+  - Additional fields like `"keywords"`, `"monetary_mention"`, etc. – currently placeholders.
+
+- `sample.update(labels)` – add all attribute labels and `_num` indices.
+
+- Return `sample`.
+
+If `extract_text` returns `None`, return `None`.
+
+---
+
+### 13.2 Sequential processing
+
+```python
+    # Sequential processing to prevent PaddleX threading issues
+    for img_path in image_files:
+        res = process_image(img_path)
+        if res:
+            data_samples.append(res)
+```
+
+- Loop through all image paths.
+- For each:
+  - `res = process_image(img_path)`.
+  - If a valid sample is returned, append it to `data_samples`.
+
+Note:
+
+- Although `ThreadPoolExecutor` was imported, it’s not used.  
+  This comment suggests they had issues with PaddleX and multithreading, so they process images **one by one**.
+
+```python
+    log_info(f"Collected {len(data_samples)} valid samples.")
+
+    if not data_samples:
+        log_error("No data samples collected. Exiting.")
+        return
+```
+
+- Log how many valid samples were collected.
+- If zero, log an error and exit the function.
+
+---
+
+### 13.3 Split into train/val/test
+
+```python
+    # Split dataset
+    train_val, test = train_test_split(data_samples, test_size=TEST_SPLIT, random_state=42)
+    train, val = train_test_split(train_val, test_size=VAL_SPLIT, random_state=42)
+```
+
+- First, split `data_samples` into:
+  - `train_val`
+  - `test` (10% of full set, per `TEST_SPLIT`)
+
+- Then split `train_val` into:
+  - `train`
+  - `val` (10% of train_val, per `VAL_SPLIT`)
+
+`random_state=42` makes the split deterministic.
+
+---
+
+### 13.4 Process each split and rename images
+
+```python
+    index_counter = 1
+    train_rows = process_split(train, "train", index_counter)
+    index_counter += len(train_rows)
+    val_rows = process_split(val, "val", index_counter)
+    index_counter += len(val_rows)
+    test_rows = process_split(test, "test", index_counter)
+```
+
+- `index_counter` – running index to produce unique image names across all splits.
+
+Process train:
+
+- `train_rows = process_split(train, "train", index_counter)`:
+  - Copies images and names them like `train_0001.jpg`, `train_0002.jpg`, ...
+  - Returns CSV rows with `"image_path"` updated to these new names.
+
+- `index_counter += len(train_rows)` – so the next split’s naming continues from next index.
+
+Similarly for val and test with labels `"val"` and `"test"`.
+
+Result:
+
+- `train_rows`, `val_rows`, `test_rows` – lists of row dicts ready to be saved to CSVs.
+
+---
+
+### 13.5 Save CSVs
+
+```python
+    save_csv(os.path.join(PROCESSED_DATA_DIR, "train.csv"), train_rows)
+    save_csv(os.path.join(PROCESSED_DATA_DIR, "val.csv"), val_rows)
+    save_csv(os.path.join(PROCESSED_DATA_DIR, "test.csv"), test_rows)
+```
+
+- Calls `save_csv` for each split:
+  - `train.csv`
+  - `val.csv`
+  - `test.csv`
+
+These CSVs are what your training and evaluation scripts will consume.
+
+---
+
+### 13.6 Compute average OCR confidence and final logs
+
+```python
+    all_rows = train_rows + val_rows + test_rows
+    avg_score = sum(row["score"] for row in all_rows) / len(all_rows) if all_rows else 0
+    log_info(f"Average OCR confidence score: {avg_score:.4f}")
+```
+
+- Combine all rows into `all_rows`.
+- Compute average `score` across all rows.
+- Log it as “Average OCR confidence score”.
+
+Gives you a sense of how good OCR generally was on this dataset.
+
+```python
+    log_info(f"\n=== Dataset Preparation Complete ===")
+    log_info(f"Train samples: {len(train_rows)}")
+    log_info(f"Val samples: {len(val_rows)}")
+    log_info(f"Test samples: {len(test_rows)}")
+    log_info(f"\nNOTE: Labels were randomly generated for demonstration.")
+    log_info(f"For actual training, please manually label your data in the CSV files.")
+```
+
+- Final summary logs:
+  - Counts of train/val/test samples.
+  - Strong note: **labels were randomly generated** for demonstration.
+  - Instruction: for real training, manually label your data in the CSVs.
+
+---
+
+## 14. Script entry point
+
+```python
+if __name__ == "__main__":
+    prepare_dataset()
+```
+
+- If you run this file directly:
+
+  ```bash
+  python dataset_generator/prepare_data.py
+  ```
+
+- It will call `prepare_dataset()` and:
+
+  1. Scan `RAW_DATA_DIR` for images.
+  2. For each image:
+     - Validate it.
+     - Run OCR with PaddleX.
+     - If text found:
+       - Attach random labels (for now).
+       - Build a sample record.
+  3. Split samples into train/val/test.
+  4. Copy/rename images into `IMAGE_OUTPUT_DIR`.
+  5. Write `train.csv`, `val.csv`, `test.csv` into `PROCESSED_DATA_DIR`.
+  6. Log summary and average OCR score.
+
+---
+
+## Visual overview
+
+You can think of this script as a factory line:
+
+```text
+RAW_DATA_DIR (raw images)
+    │
+    ▼
+For each image:
+   - Check valid
+   - OCR → text, score
+   - If text:
+       - Generate random labels for theme/sentiment/etc.
+       - Build sample record
+    │
+    ▼
+List of sample records (data_samples)
+    │
+    ├─ Split into train / val / test
+    │
+    ├─ For each split:
+    │     ├─ Copy original image → IMAGE_OUTPUT_DIR
+    │     │     with new name: train_0001.jpg, val_0001.jpg, ...
+    │     └─ Update sample["image_path"] to new filename
+    │
+    └─ Write CSVs: train.csv, val.csv, test.csv
+           with columns:
+           image_path, text, score, theme, theme_num, ..., original_image, ...
+```
+
+The result is a **clean, structured dataset** that:
+
+- Has consistent image names and locations.
+- Associates each image with the OCR text and label placeholders.
+- Can be directly fed into your `CustomDataset` → `FG_MFN` training/evaluation pipeline.
+
+If you’d like, I can show how to run this in a minimal environment and then use the resulting `train.csv` with your training script.

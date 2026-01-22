@@ -1,0 +1,261 @@
+Here’s what this `TextModule` does, broken down in simple, visual terms.
+
+---
+
+## 1. Imports
+
+```python
+import torch
+import torch.nn as nn
+from transformers import BertModel
+```
+
+- `import torch`  
+  Brings in PyTorch, the library used to build neural networks.
+
+- `import torch.nn as nn`  
+  Gives us access to neural network building blocks (layers, activations, etc.) under the short name `nn`.
+
+- `from transformers import BertModel`  
+  Imports a pre-trained **BERT** model from the Hugging Face `transformers` library.  
+  BERT is a powerful language model that turns text into meaningful vectors.
+
+---
+
+## 2. The `TextModule` class
+
+```python
+class TextModule(nn.Module):
+```
+
+- Defines a new neural network component called `TextModule`.
+- It inherits from `nn.Module`, meaning it’s a standard PyTorch model component.
+
+Think of `TextModule` as:
+
+> “The text understanding piece” of a bigger system.  
+> Input: tokenized text  
+> Output: a fixed-size vector that summarizes the text.
+
+---
+
+## 3. Constructor: `__init__`
+
+```python
+    def __init__(self, encoder_name="bert-base-uncased", out_features=512, freeze=False):
+        super(TextModule, self).__init__()
+```
+
+- `__init__` is called when you create `TextModule(...)`.
+
+- Parameters:
+  - `encoder_name="bert-base-uncased"`  
+    Which BERT model to use (here, the common `"bert-base-uncased"` variant).
+  - `out_features=512`  
+    How long you want the final output vector from this module to be (dimension 512).
+  - `freeze=False`  
+    Whether to “freeze” BERT’s weights (prevent them from being updated during training).
+
+- `super(TextModule, self).__init__()`  
+  Initializes the base `nn.Module` stuff internally.
+
+---
+
+### 3.1 Load the BERT backbone
+
+```python
+        self.bert = BertModel.from_pretrained(encoder_name)
+```
+
+- Loads a pre-trained BERT model by name.  
+- `self.bert` is now a full BERT encoder with all its layers and weights.
+
+Visually:
+
+> Tokens (input_ids, attention_mask) → BERT → contextual word embeddings
+
+BERT’s job here:  
+For each token in the sentence, produce a rich vector that captures meaning and context.
+
+---
+
+### 3.2 Optional: freeze BERT
+
+```python
+        # Freeze backbone if requested
+        if freeze:
+            for param in self.bert.parameters():
+                param.requires_grad = False
+```
+
+- If `freeze` is `True`, we loop over all of BERT’s parameters:
+  - `param.requires_grad = False`  
+    This tells PyTorch: “Do NOT update this parameter during training.”
+
+Effect:
+
+- If `freeze=True`: BERT behaves like a **fixed feature extractor**. Only the layers you add on top will learn.
+- If `freeze=False`: BERT’s weights can be fine-tuned (updated) for your specific task, which is more powerful but can be more expensive and needs more data.
+
+Analogy:
+
+> Freeze = “lock the base BERT in place, only adjust the head on top.”
+
+---
+
+### 3.3 Dropout and final linear layer
+
+```python
+        self.dropout = nn.Dropout(0.3)
+        self.fc = nn.Linear(self.bert.config.hidden_size, out_features)
+```
+
+Two parts:
+
+1. `self.dropout = nn.Dropout(0.3)`  
+   - Dropout randomly zeros out 30% of the elements in its input during training.  
+   - This helps prevent overfitting by making the model less dependent on any single feature.
+
+2. `self.fc = nn.Linear(self.bert.config.hidden_size, out_features)`  
+   - A **fully connected (linear)** layer:
+     - Input size = `self.bert.config.hidden_size` (usually 768 for `bert-base-uncased`)
+     - Output size = `out_features` (here, 512)
+   - This layer transforms BERT’s output vector into a new vector of the size you want.
+
+Visually:
+
+> [CLS embedding from BERT] → Dropout → Linear (768 → 512) → final text embedding
+
+---
+
+## 4. Forward pass: how data flows
+
+```python
+    def forward(self, input_ids, attention_mask=None):
+```
+
+- Defines how the module processes data when you do `text_module(input_ids, attention_mask)`.
+
+- `input_ids`:  
+  A tensor of token IDs for a batch of sentences, shape like `[batch_size, sequence_length]`.  
+  Each number corresponds to a token in BERT’s vocabulary.
+
+- `attention_mask` (optional):  
+  A tensor of 0/1 values, same shape as `input_ids`, indicating which positions are real tokens (1) and which are padding (0).
+
+---
+
+### 4.1 Run BERT
+
+```python
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+```
+
+- Pass the inputs through BERT.
+
+- `outputs` is an object with several attributes; the important one here is:
+  - `outputs.last_hidden_state`  
+    Shape: `[batch_size, sequence_length, hidden_size]`
+
+So for each token in each sentence, you get a vector of size `hidden_size` (e.g., 768).
+
+Visually:
+
+> Input: batch of token sequences  
+> Output: a 3D tensor = (batch, position in sentence, embedding for that position)
+
+---
+
+### 4.2 Take the [CLS] token
+
+```python
+        cls_output = outputs.last_hidden_state[:, 0, :] 
+```
+
+- `outputs.last_hidden_state[:, 0, :]`  
+  This picks out, for each sentence, the vector at **position 0**.
+
+In BERT, the token at position 0 is usually a special token called `[CLS]` (“classification”).  
+- BERT is trained so that `[CLS]`’s final embedding can serve as a summary representation of the whole input sequence.
+
+So:
+
+- `cls_output` has shape `[batch_size, hidden_size]`.
+
+Visually:
+
+> For each sentence:  
+> pick just the first token’s embedding → use it as the summary of the whole sentence.
+
+---
+
+### 4.3 Apply dropout
+
+```python
+        cls_output = self.dropout(cls_output)
+```
+
+- Runs the `[CLS]` embeddings through dropout:
+  - During training, randomly zeroes out 30% of the entries in each vector.
+  - During evaluation/inference, dropout does nothing.
+
+This helps make the final representation more robust and less likely to overfit.
+
+---
+
+### 4.4 Final linear projection
+
+```python
+        return self.fc(cls_output) 
+```
+
+- Feed the (dropout-ed) `[CLS]` embeddings into the final fully connected layer.
+
+If:
+- BERT hidden size = 768
+- `out_features = 512`
+
+Then:
+
+- Input shape: `[batch_size, 768]`
+- Output shape: `[batch_size, 512]`
+
+So this line returns a **batch of final text embeddings**, each of length `out_features`.
+
+Visually:
+
+> Text → BERT → [CLS] vector (768) → Dropout → Linear → final vector (512)
+
+---
+
+## Overall picture
+
+You can think of `TextModule` as:
+
+```text
+Token IDs + Attention Mask
+            │
+            ▼
+       BERT Encoder
+            │
+       last_hidden_state (batch, seq_len, hidden_size)
+            │
+            ▼
+   take position 0 ([CLS] token)
+            │
+            ▼
+      Dropout (0.3)
+            │
+            ▼
+   Linear (hidden_size → out_features)
+            │
+            ▼
+   Final text embedding  (batch, out_features)
+```
+
+This final embedding is what your larger model (like `FG_MFN`) will use to combine with image features, feed into classifiers, etc.
+
+If you like, next I can:
+
+- Show how to call this `TextModule` with real tokenized inputs.
+- Or compare a version that uses the average of all tokens instead of just `[CLS]`.

@@ -1,0 +1,377 @@
+This file defines a **unit test** that checks your **prediction pipeline** end‑to‑end, but in a controlled way:
+
+- It creates dummy images + CSV  
+- Mocks the OCR function so you don’t actually run PaddleX  
+- Calls `server.predict.predict(images)`  
+- Asserts that the results have the expected structure and types
+
+I’ll go through it line by line and function by function.
+
+---
+
+## 1. Imports
+
+```python
+import unittest
+import os
+import torch
+import shutil
+from PIL import Image
+from tests.test_utils import setup_dummy_data, teardown_dummy_data
+from server.predict import predict, model
+from utils.path import MODEL_CONFIG
+```
+
+- `import unittest`  
+  Python’s built-in testing library. You define classes that inherit from `unittest.TestCase` and write methods starting with `test_`.
+
+- `import os`  
+  For directory listings and file path operations.
+
+- `import torch`  
+  Imported but not actually used in this file (harmless).
+
+- `import shutil`  
+  Also not used directly here; may be leftover from earlier versions.
+
+- `from PIL import Image`  
+  Import Pillow’s `Image` class to open images from disk.
+
+- `from tests.test_utils import setup_dummy_data, teardown_dummy_data`  
+  Functions you saw earlier:
+  - `setup_dummy_data(base_dir, multi_attribute=True/False)`:
+    - Creates a temporary directory with:
+      - `images/` containing dummy images.
+      - `data.csv` describing them.
+  - `teardown_dummy_data(base_dir)`:
+    - Deletes that directory after the test.
+
+- `from server.predict import predict, model`  
+  Imports:
+  - `predict` – your main prediction function (OCR + model inference) from `server/predict.py`.
+  - `model` – the global model variable defined in that module (initially `None`, lazily loaded).
+
+- `from utils.path import MODEL_CONFIG`  
+  Path to your model config JSON.  
+  It’s imported but not used in this particular test.
+
+---
+
+## 2. Test case class
+
+```python
+class TestPrediction(unittest.TestCase):
+```
+
+- Defines a test case called `TestPrediction`.
+- It inherits from `unittest.TestCase`, so any method named `test_*` will be treated as an automated test.
+
+---
+
+## 3. `setUp`: runs before each test
+
+```python
+    def setUp(self):
+        self.test_dir = "tests/temp_data_predict"
+        self.csv_path, self.image_dir = setup_dummy_data(self.test_dir)
+        
+        # Ensure we can load a dummy model state if needed, or just use initialized model
+        # For this test, we might use the global model from server.predict which is already initialized
+        # but we need to make sure it's in eval mode.
+        pass
+```
+
+- `setUp` is a special `unittest` method that runs **before every test method** in this class.
+
+Inside:
+
+1. `self.test_dir = "tests/temp_data_predict"`  
+   - Defines a temporary directory where this test’s dummy data will live.
+
+2. `self.csv_path, self.image_dir = setup_dummy_data(self.test_dir)`  
+   - Calls the helper you saw earlier to:
+     - Remove `tests/temp_data_predict` if it exists.
+     - Create `tests/temp_data_predict/images/` with 5 dummy “document” images.
+     - Create `tests/temp_data_predict/data.csv` with random labels.
+   - `setup_dummy_data` returns:
+     - `csv_path` – path to the CSV (e.g., `tests/temp_data_predict/data.csv`).
+     - `image_dir` – path to the images folder (e.g., `tests/temp_data_predict/images`).
+   - These are stored in `self.csv_path` and `self.image_dir`.
+
+The commented lines:
+
+```python
+        # Ensure we can load a dummy model state if needed, or just use initialized model
+        # For this test, we might use the global model from server.predict which is already initialized
+        # but we need to make sure it's in eval mode.
+        pass
+```
+
+- Are just comments explaining intent:
+  - We could ensure the global `model` from `server.predict` is loaded and in eval mode here.
+- `pass` means “do nothing else in setUp”.
+
+Currently, this test relies on `predict(images)` to handle lazy model loading internally (via `load_model()` in `server.predict`).
+
+---
+
+## 4. `tearDown`: runs after each test
+
+```python
+    def tearDown(self):
+        teardown_dummy_data(self.test_dir)
+```
+
+- `tearDown` runs **after each test method**, even if the test fails.
+
+- `teardown_dummy_data(self.test_dir)`:
+  - Deletes `tests/temp_data_predict` and everything under it.
+  - Ensures tests don’t leave behind temporary files.
+
+So each test run:
+
+- Creates temporary dummy data in `setUp`.
+- Cleans it up in `tearDown`.
+
+---
+
+## 5. The core test method: `test_predict_function_execution`
+
+```python
+    @unittest.mock.patch("server.predict.extract_text")
+    def test_predict_function_execution(self, mock_extract):
+```
+
+This defines the actual test.
+
+### 5.1 Mocking OCR
+
+The decorator:
+
+```python
+    @unittest.mock.patch("server.predict.extract_text")
+```
+
+- Uses `unittest.mock.patch` to **replace** the `extract_text` function in `server.predict` with a mock object for the duration of this test.
+- `extract_text` is the OCR helper in `server/predict.py` that:
+  - Uses PaddleX to run OCR and return `(text, confidence)`.
+
+By patching it, you avoid:
+
+- Dependence on PaddleX being installed and working.
+- Slow or fragile OCR on dummy images.
+
+The mock object is passed into the function as `mock_extract`:
+
+```python
+    def test_predict_function_execution(self, mock_extract):
+```
+
+So inside this test, any call to `server.predict.extract_text(...)` will instead call `mock_extract(...)`.
+
+---
+
+### 5.2 Configure the mock’s behavior
+
+```python
+        # Mock OCR output so we don't crash PaddleX on dummy images
+        mock_extract.return_value = ("TEST DOCUMENT TEXT", 0.99)
+```
+
+- `mock_extract.return_value` defines what the mock returns whenever it is called.
+
+Here, for any image:
+
+- `extract_text(image)` will return:
+  - OCR text: `"TEST DOCUMENT TEXT"`
+  - OCR confidence: `0.99`
+
+That ensures:
+
+- Your code doesn’t actually do OCR.
+- OCR output is deterministic and easy to check.
+
+---
+
+### 5.3 Load a few dummy images
+
+```python
+        # Load a few images
+        images = []
+        image_files = os.listdir(self.image_dir)[:3]
+        for f in image_files:
+            img_path = os.path.join(self.image_dir, f)
+            images.append(Image.open(img_path).convert("RGB"))
+```
+
+Step by step:
+
+1. `images = []`  
+   - Empty list to hold PIL `Image` objects.
+
+2. `image_files = os.listdir(self.image_dir)[:3]`  
+   - List all filenames in `self.image_dir` (where `setup_dummy_data` put 5 images).
+   - Take the first 3 of them.
+   - Example: `["img_0.jpg", "img_1.jpg", "img_2.jpg"]`.
+
+3. Loop over these filenames:
+
+   ```python
+   for f in image_files:
+       img_path = os.path.join(self.image_dir, f)
+       images.append(Image.open(img_path).convert("RGB"))
+   ```
+
+   - `img_path` – full path to each image file.
+   - `Image.open(img_path)` – open the image as a PIL image.
+   - `.convert("RGB")` – ensure it’s in RGB mode (3 channels).
+   - Append each PIL image to the `images` list.
+
+After this loop:
+
+- `images` is a list of 3 PIL Image objects, ready to be passed into `predict(images)`.
+
+---
+
+### 5.4 Run `predict` and ensure it doesn’t crash
+
+```python
+        # Run predict
+        try:
+            results = predict(images)
+        except Exception as e:
+            self.fail(f"Prediction failed with error: {e}")
+```
+
+- `results = predict(images)`:
+  - Calls your main prediction function from `server.predict`.
+  - Internally, `predict` will:
+    - For each image, call `extract_text(image)` — but that’s now the mocked version, returning `"TEST DOCUMENT TEXT"`.
+    - Tokenize the text.
+    - Transform images (resize, normalize).
+    - Run through the `FG_MFN` model (lazy-loaded inside `server.predict`).
+    - For each attribute head, compute logits → probabilities → predicted label + confidence.
+    - Build a result dictionary for each image.
+
+- The `try/except` block:
+
+  - If `predict(images)` raises ANY exception:
+    - The test **fails** with the message:  
+      `"Prediction failed with error: <error message>"`.
+
+So this ensures:
+
+> The `predict` function can execute end‑to‑end on a list of PIL images without crashing, when OCR is mocked.
+
+---
+
+### 5.5 Basic structural checks on results
+
+```python
+        self.assertEqual(len(results), len(images))
+```
+
+- Asserts that the number of result entries equals the number of input images.
+- If not, test fails.
+
+Then more detailed checks:
+
+```python
+        for res in results:
+            self.assertIn("predicted_label_text", res)
+            self.assertIn("confidence_score", res)
+            self.assertIn("ocr_text", res)
+            self.assertEqual(res["ocr_text"], "TEST DOCUMENT TEXT") # Verify mock was used
+            self.assertTrue(isinstance(res["confidence_score"], float))
+```
+
+For each result dictionary `res`:
+
+1. `self.assertIn("predicted_label_text", res)`  
+   - Checks that the result has a key `"predicted_label_text"`:
+     - This is the legacy-style main label text chosen in `server.predict`.
+
+2. `self.assertIn("confidence_score", res)`  
+   - Checks that there is a `"confidence_score"` key:
+     - Confidence of the primary predicted label (float).
+
+3. `self.assertIn("ocr_text", res)`  
+   - Checks that there is an `"ocr_text"` key:
+     - The combined OCR text for that image.
+
+4. `self.assertEqual(res["ocr_text"], "TEST DOCUMENT TEXT")`  
+   - Ensures that the OCR text in the result is exactly the mocked value.
+   - This confirms that:
+     - The mock was used.
+     - The pipeline is correctly taking OCR output from `extract_text`.
+
+5. `self.assertTrue(isinstance(res["confidence_score"], float))`  
+   - Verifies that the `confidence_score` is a Python float:
+     - Ensures type correctness, not just presence.
+
+If any of these conditions fail, the test will fail with a descriptive message.
+
+---
+
+## 6. Test runner
+
+```python
+if __name__ == "__main__":
+    unittest.main()
+```
+
+- If you run this file directly, Python’s unittest runner starts.
+- It will:
+  - Discover `TestPrediction`.
+  - For each test method (`test_predict_function_execution`):
+    - Run `setUp` → the test method → `tearDown`.
+  - Show a summary of passed/failed tests.
+
+---
+
+## Visual overview of what this test is doing
+
+Think of the test as a **safe, mini simulation** of the real prediction flow:
+
+```text
+setUp:
+  ├─ Create temp folder: tests/temp_data_predict
+  ├─ Create 5 dummy images and data.csv (though CSV not used here)
+  └─ Store paths in self.csv_path, self.image_dir
+
+test_predict_function_execution:
+  ├─ Patch server.predict.extract_text with a mock that always returns:
+  │     ("TEST DOCUMENT TEXT", 0.99)
+  ├─ Load 3 dummy images from self.image_dir as PIL RGB images
+  ├─ Call predict(images)
+  │     ├─ For each image:
+  │     │    ├─ extract_text(image) → returns mocked text
+  │     │    ├─ tokenize text, transform image
+  │     │    ├─ run FG_MFN model → logits for each attribute
+  │     │    ├─ pick top class per attribute → label + confidence
+  │     │    └─ build result dict with:
+  │     │         - predicted_label_text
+  │     │         - predicted_label_num
+  │     │         - confidence_score
+  │     │         - ocr_text (from mock)
+  │     │         - extra fields
+  ├─ Assert: no exception was raised
+  ├─ Assert: len(results) == len(images)
+  └─ For each result:
+        ├─ "predicted_label_text" present
+        ├─ "confidence_score" present and is float
+        └─ "ocr_text" == "TEST DOCUMENT TEXT" (verifies OCR mock)
+
+tearDown:
+  └─ Delete tests/temp_data_predict folder
+```
+
+This gives you confidence that:
+
+- The `predict` function:
+  - Accepts a list of PIL images.
+  - Integrates OCR, tokenization, transforms, model inference.
+  - Returns a well-formed list of result dictionaries.
+- And that you can safely mock external dependencies (like OCR) in tests to focus on your own code.
+
+If you’d like, I can help add additional assertions, like checking that each result also contains at least one of your attribute predictions (`"sentiment"`, `"emotion"`, etc.).

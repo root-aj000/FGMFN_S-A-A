@@ -1,0 +1,368 @@
+This file is responsible for **turning raw CSV + image files + text into a Python structure ready for PyTorch training**.
+
+I’ll go through it top to bottom, explaining each part and what the data looks like at each step.
+
+---
+
+## 1. Imports
+
+```python
+import os
+import cv2
+import torch
+import pandas as pd
+from preprocessing.image_preprocessing import resize_image, normalize_image
+from preprocessing.text_preprocessing import clean_text, tokenize_text
+from preprocessing.augmentation import augment_image
+from utils.path import PROCESSED_IMAGE_DIR, TRAIN_CSV, VAL_CSV, TEST_CSV
+```
+
+- `import os`  
+  Used for file path operations, like `os.path.join`.
+
+- `import cv2`  
+  OpenCV library — for reading images from disk (`cv2.imread`) and basic image operations.
+
+- `import torch`  
+  For PyTorch tensors, which are the main data type used by PyTorch models.
+
+- `import pandas as pd`  
+  Pandas is used for reading and working with tabular data, especially CSV files.
+
+- `from preprocessing.image_preprocessing import resize_image, normalize_image`  
+  Imports two helper functions (defined elsewhere) that:
+  - `resize_image(img)`: likely resizes images to a fixed size (e.g., 224×224).
+  - `normalize_image(img)`: likely converts the image to a PyTorch tensor and normalizes pixel values (e.g., to [0,1] or with mean/std used in ImageNet).
+
+- `from preprocessing.text_preprocessing import clean_text, tokenize_text`  
+  Functions for handling raw text:
+  - `clean_text(text)`: probably lowercases, removes extra spaces, maybe removes special characters.
+  - `tokenize_text(text)`: converts cleaned text to numerical token IDs (for BERT or another tokenizer).
+
+- `from preprocessing.augmentation import augment_image`  
+  The augmentation function you showed before:
+  - Random flip, random small rotation, random crop.
+
+- `from utils.path import PROCESSED_IMAGE_DIR, TRAIN_CSV, VAL_CSV, TEST_CSV`  
+  Imports pre-defined paths:
+  - `PROCESSED_IMAGE_DIR`: directory where your processed images are stored.
+  - `TRAIN_CSV`, `VAL_CSV`, `TEST_CSV`: paths to CSV files that describe the train/val/test datasets.
+
+---
+
+## 2. Config / Paths
+
+```python
+# Config / Paths
+PROCESSED_IMAGE_DIR = PROCESSED_IMAGE_DIR
+TRAIN_CSV = TRAIN_CSV
+VAL_CSV = VAL_CSV
+TEST_CSV = TEST_CSV
+```
+
+This looks redundant, but what it does is:
+
+- Reassigns the imported constants to module-level variables with the same names.
+- Functionally, these lines **don’t change the values**; they just make it explicit that these are the paths this module will use.
+
+You can read it as:
+
+> “In this file, the paths `PROCESSED_IMAGE_DIR`, `TRAIN_CSV`, etc., refer to the constants imported from `utils.path`.”
+
+---
+
+## 3. Core function: `process_dataset`
+
+```python
+def process_dataset(csv_path, augment=False):
+    """Load CSV, preprocess images and text, return dataset ready for PyTorch."""
+```
+
+- Defines a function `process_dataset` that:
+  - Takes a path to a CSV file (`csv_path`).
+  - A flag `augment` (True/False) that says whether to apply data augmentation to images.
+  - Returns a Python list of processed samples, each sample ready to be used in PyTorch.
+
+---
+
+### 3.1 Read the CSV into a DataFrame
+
+```python
+    df = pd.read_csv(csv_path)
+    processed_data = []
+```
+
+- `df = pd.read_csv(csv_path)`  
+  Reads the CSV file into a pandas DataFrame `df`.
+
+  Typical columns might be:
+  - `"image_name"` (filename of the image)
+  - `"text"` (associated text)
+  - `"label_num"` (numeric label for the sample)
+
+- `processed_data = []`  
+  Creates an empty list.  
+  We’ll fill it with dictionaries, one per example, containing:
+  - the image tensor
+  - the tokenized text
+  - the label tensor
+
+Visually:
+
+```text
+CSV (rows) → DataFrame (df) → loop rows → build a list of processed samples
+```
+
+---
+
+### 3.2 Loop over every row (sample) in the dataset
+
+```python
+    for _, row in df.iterrows():
+```
+
+- `df.iterrows()` goes through the DataFrame row by row.
+- Each `row` is like a small object/dict containing the values for that row.
+
+We ignore the index (`_`) and only care about the `row`.
+
+---
+
+### 3.3 Build image path and read image
+
+```python
+        image_path = os.path.join(PROCESSED_IMAGE_DIR, row["image_name"])
+        img = cv2.imread(image_path)
+        if img is None:
+            continue
+```
+
+- `image_path = os.path.join(PROCESSED_IMAGE_DIR, row["image_name"])`  
+  Combines the directory path and the file name from the CSV:
+
+  Example:
+  - `PROCESSED_IMAGE_DIR = "/data/images"`
+  - `row["image_name"] = "img_001.jpg"`
+  - `image_path = "/data/images/img_001.jpg"`
+
+- `img = cv2.imread(image_path)`  
+  Reads the image from disk into a NumPy array, `img`.
+
+  If successful, `img` is typically of shape:
+  - `(height, width, 3)` (BGR color channels).
+
+- `if img is None: continue`  
+  If the image file can’t be read (e.g., file missing or corrupted), `cv2.imread` returns `None`.  
+  In that case, this row is **skipped** and the loop moves to the next row.
+
+This prevents the whole preprocessing from crashing because of a bad file.
+
+---
+
+### 3.4 Resize and optionally augment image
+
+```python
+        img = resize_image(img)
+        if augment:
+            img = augment_image(img)
+        img_tensor = normalize_image(img)
+```
+
+#### 3.4.1 Resize
+
+- `img = resize_image(img)`  
+  Ensures that all images are resized to a consistent size (e.g., 224×224), which is what your model expects.
+
+Visually:
+
+> Any input size → standard size (e.g., 224×224)
+
+#### 3.4.2 Optional augmentation
+
+- `if augment:`  
+  If `augment` is `True`:
+  
+  ```python
+  img = augment_image(img)
+  ```
+  
+  - This applies your random augmentations (flip, small rotation, crop).
+  - Used mainly for **training data** to make the model more robust.
+
+- If `augment` is `False`, no augmentation is done — useful for validation/test, where you want deterministic behavior.
+
+#### 3.4.3 Normalize and convert to tensor
+
+- `img_tensor = normalize_image(img)`  
+  This likely:
+  - Converts the OpenCV BGR image (NumPy array) into a PyTorch tensor.
+  - Possibly changes channel order to RGB.
+  - Scales pixel values (e.g., divide by 255) and normalizes using mean and standard deviation.
+
+Result:
+- `img_tensor` is a **PyTorch tensor** in the shape your model expects:
+  - Often `[3, H, W]` (channels first).
+
+Now the image is fully **model-ready**.
+
+---
+
+### 3.5 Process the text
+
+```python
+        text = clean_text(row["text"])
+        token_ids = tokenize_text(text)
+```
+
+- `text = clean_text(row["text"])`  
+  Takes the raw text from the CSV (e.g., a caption, description, tweet) and cleans it:
+  - Maybe lowercasing.
+  - Removing extra spaces.
+  - Removing URLs, HTML tags, or special characters.
+  - Details depend on your implementation.
+
+- `token_ids = tokenize_text(text)`  
+  Converts the cleaned text into a list or tensor of token IDs (integers), suitable for input to a text model like BERT.
+
+Result might be:
+- A Python list or PyTorch tensor shaped like `[sequence_length]`, e.g. `[101, 1234, 5678, 102, 0, 0, ...]`.
+
+Now the text is **numerical**, ready to be fed into the text encoder.
+
+---
+
+### 3.6 Construct a processed sample dictionary
+
+```python
+        processed_data.append({
+            "image": img_tensor,
+            "text_tokens": token_ids,
+            "label": torch.tensor(row["label_num"], dtype=torch.long)
+        })
+```
+
+Here we **bundle everything together for this one row**:
+
+- `"image": img_tensor`  
+  The model-ready image tensor (e.g., `[3, 224, 224]`).
+
+- `"text_tokens": token_ids`  
+  The tokenized text (either a list of IDs or a tensor), which your `TextModule` will take.
+
+- `"label": torch.tensor(row["label_num"], dtype=torch.long)`  
+  The numeric label:
+  - `row["label_num"]` is likely an integer in the CSV representing the class (e.g., 0, 1, 2).
+  - `torch.tensor(..., dtype=torch.long)` converts it into a PyTorch integer tensor, which is what loss functions like `nn.CrossEntropyLoss` expect.
+
+Each appended element is a dictionary with **three keys**: `"image"`, `"text_tokens"`, and `"label"`.
+
+At the end, `processed_data` is a **list of such dictionaries**, one per usable row.
+
+Visually:
+
+```text
+processed_data = [
+  {
+    "image":       <torch tensor for image 1>,
+    "text_tokens": <token IDs for text 1>,
+    "label":       <tensor(label_1)>
+  },
+  {
+    "image":       <torch tensor for image 2>,
+    "text_tokens": <token IDs for text 2>,
+    "label":       <tensor(label_2)>
+  },
+  ...
+]
+```
+
+---
+
+### 3.7 Return the processed dataset
+
+```python
+    return processed_data
+```
+
+- After looping through all rows, the function returns the `processed_data` list.
+
+This can then be wrapped in a PyTorch `Dataset` class and fed to a `DataLoader` for batching.
+
+---
+
+## 4. Example usage (when run as script)
+
+```python
+# Example usage
+if __name__ == "__main__":
+    train_data = process_dataset(TRAIN_CSV, augment=True)
+    val_data = process_dataset(VAL_CSV, augment=False)
+    test_data = process_dataset(TEST_CSV, augment=False)
+
+    print(f"Processed train samples: {len(train_data)}")
+    print(f"Processed val samples: {len(val_data)}")
+    print(f"Processed test samples: {len(test_data)}")
+```
+
+- `if __name__ == "__main__":`  
+  Means: “Only run the following block if this file is run directly as a script, not when it’s imported.”
+
+### 4.1 Process train/val/test sets
+
+```python
+    train_data = process_dataset(TRAIN_CSV, augment=True)
+```
+
+- Processes the training CSV.
+- `augment=True`: applies data augmentation to images.
+- `train_data` becomes a list of processed training samples.
+
+```python
+    val_data = process_dataset(VAL_CSV, augment=False)
+    test_data = process_dataset(TEST_CSV, augment=False)
+```
+
+- Processes validation and test CSVs.
+- `augment=False`: no random perturbations; we want consistent evaluation.
+- `val_data` and `test_data` are similar lists of processed samples, but without augmentations.
+
+### 4.2 Print counts
+
+```python
+    print(f"Processed train samples: {len(train_data)}")
+    print(f"Processed val samples: {len(val_data)}")
+    print(f"Processed test samples: {len(test_data)}")
+```
+
+- Prints how many samples were successfully processed for each split.
+
+This is a sanity check: you can see if some images were skipped (e.g., missing files) by comparing to the expected row counts in the CSV.
+
+---
+
+## Mental flow diagram
+
+Overall, `process_dataset` does:
+
+```text
+CSV file (path)  
+    │
+    ▼
+Read into DataFrame (pandas)
+    │
+    ▼
+Loop over rows:
+    ├─ Build full image path
+    ├─ Read image with OpenCV
+    ├─ Resize image
+    ├─ (Optional) augment image
+    ├─ Normalize + convert to tensor
+    ├─ Clean text
+    ├─ Tokenize text → token IDs
+    ├─ Read numeric label → convert to tensor
+    └─ Append dict {"image", "text_tokens", "label"} to list
+
+Return: list of samples ready for PyTorch
+```
+
+If you’d like, I can show how to wrap this `processed_data` into a `torch.utils.data.Dataset` class so you can use it directly with a `DataLoader` in training.

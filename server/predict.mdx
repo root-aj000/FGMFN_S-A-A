@@ -1,0 +1,954 @@
+This file is the **core prediction engine** behind your API.  
+Given a list of images, it:
+
+- Runs OCR (reads text from the image)
+- Uses your multimodal model (image + text) to predict multiple attributes
+- Adds some extra text-based analysis (keywords, money mentions, calls-to-action, etc.)
+- Returns a structured list of results
+
+I’ll walk through it section by section, explaining what each part does and how data flows.
+
+---
+
+## 1. Imports
+
+```python
+import os
+import re
+import json
+import torch
+import numpy as np
+import traceback
+from PIL import Image
+from torchvision import transforms
+from paddlex import create_pipeline
+
+from preprocessing.text_preprocessing import tokenize_text
+from models.fg_mfn import FG_MFN, ATTRIBUTE_NAMES
+from utils.path import SAVED_MODEL_PATH, MODEL_CONFIG
+```
+
+- `os` – file paths and filesystem utilities.
+- `re` – regular expressions (pattern matching in text).
+- `json` – reading the model config file.
+- `torch` – PyTorch; for tensors, model loading, running inference.
+- `numpy as np` – numerical arrays (not heavily used here, but imported).
+- `traceback` – for detailed error traces (not used directly in this code).
+- `from PIL import Image` – PIL image type.
+- `from torchvision import transforms` – standard vision transforms (resize, normalize, etc.).
+- `from paddlex import create_pipeline` – used to create an OCR pipeline (reads text from images).
+- `from preprocessing.text_preprocessing import tokenize_text` – text → token IDs + attention mask.
+- `from models.fg_mfn import FG_MFN, ATTRIBUTE_NAMES` – your multimodal model class and list of attributes.
+- `from utils.path import SAVED_MODEL_PATH, MODEL_CONFIG` – paths to:
+  - Model weights file.
+  - Model config file.
+
+---
+
+## 2. OCR model (text extraction from images)
+
+```python
+# ------------------ OCR MODEL ------------------
+ocr_model = create_pipeline(pipeline="ocr")
+```
+
+- Initializes an OCR pipeline using PaddleX:
+  - `create_pipeline(pipeline="ocr")` sets up a ready‑to‑use OCR model.
+- `ocr_model` can then be used like: `ocr_model.predict(image_path)` to get text predictions.
+
+Conceptually:
+
+> This is a mini “read text from image” brain, separate from your PyTorch model.
+
+---
+
+## 3. Paths and constants
+
+```python
+# ------------------ PATHS ------------------
+MODEL_PATH = SAVED_MODEL_PATH
+MODEL_CONFIG_PATH = MODEL_CONFIG
+IMAGE_UPLOAD_DIR = "data/images/tmp_uploads/"
+```
+
+- `MODEL_PATH` – path to the saved PyTorch model weights (checkpoint).
+- `MODEL_CONFIG_PATH` – path to the JSON config describing model architecture, attributes, labels, etc.
+- `IMAGE_UPLOAD_DIR` – where API temporarily stores uploaded images (used by `server/app.py` too).
+
+---
+
+## 4. Hyperparameters and device
+
+```python
+# ------------------ HYPERPARAMS ------------------
+BATCH_SIZE = 16
+IMAGE_SIZE = (224, 224)
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+MAX_TEXT_LEN = 128
+```
+
+- `BATCH_SIZE = 16`  
+  During prediction, images are processed in mini-batches of up to 16 at a time.
+
+- `IMAGE_SIZE = (224, 224)`  
+  Target size for images fed into the model (ResNet-style).
+
+- `DEVICE`  
+  - `"cuda"` if a GPU is available.
+  - Otherwise `"cpu"`.
+  - All tensors and the model will be moved to this device.
+
+- `MAX_TEXT_LEN = 128`  
+  Maximum number of tokens for text sequences (though here the value is not used directly, since `tokenize_text` has its own default).
+
+---
+
+## 5. Image transform (preprocessing for the model)
+
+```python
+# ------------------ IMAGE TRANSFORM ------------------
+transform = transforms.Compose([
+    transforms.Resize(IMAGE_SIZE),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+```
+
+This defines how raw PIL images are turned into model-ready tensors:
+
+1. `transforms.Resize(IMAGE_SIZE)`  
+   - Resize each image so its shorter side is 224 and it’s square (224×224).
+
+2. `transforms.ToTensor()`  
+   - Convert from PIL image (0–255) to a PyTorch tensor:
+     - Shape: `[C, H, W]` (channels first)
+     - Values scaled to [0,1].
+
+3. `transforms.Normalize(mean=..., std=...)`  
+   - Per‑channel normalization to the same statistics used for ImageNet-trained models:
+     - mean = `[0.485, 0.456, 0.406]`
+     - std  = `[0.229, 0.224, 0.225]`
+   - This makes the input distribution match what the backbone was trained on.
+
+Visually:
+
+> PIL image → resize to 224×224 → convert to tensor → normalize → ready for the CNN.
+
+---
+
+## 6. Load model config (JSON)
+
+```python
+# ------------------ LOAD CONFIG ------------------
+try:
+    with open(MODEL_CONFIG_PATH, "r") as f:
+        CFG = json.load(f)
+except Exception as e:
+    print(f"[WARNING] Failed to load model config: {e}", flush=True)
+    CFG = {}
+```
+
+- Tries to open and read the JSON config file at `MODEL_CONFIG_PATH`.
+- `CFG` becomes a Python dictionary describing:
+  - Hidden dimensions
+  - Backbones
+  - Attributes and their labels
+  - Dropout, etc.
+
+If anything fails (file missing, bad JSON):
+
+- Prints a warning and sets `CFG = {}` (empty dict).
+- The model can still be constructed, but may revert to default behavior (e.g., legacy single-sentiment mode).
+
+---
+
+## 7. Lazy model loading
+
+```python
+# ------------------ LOAD MODEL (LAZY) ------------------
+model = None
+```
+
+- `model` is a global variable, initially `None`.
+- It will hold the loaded `FG_MFN` model instance.
+- “Lazy” means it is loaded only when first needed.
+
+### 7.1 `load_model` function
+
+```python
+def load_model():
+    global model
+    if model is not None:
+        return model
+```
+
+- Uses `global model` so we can modify the module-level variable.
+- If `model` is already loaded, just return it (no need to reload).
+
+---
+
+```python
+    try:
+        loaded_model = FG_MFN(CFG).to(DEVICE)
+
+        if os.path.exists(MODEL_PATH):
+            loaded_model.load_state_dict(
+                torch.load(MODEL_PATH, map_location=DEVICE)
+            )
+        else:
+            print("[WARNING] Model checkpoint not found. Using random weights.")
+
+        loaded_model.eval()
+        model = loaded_model
+        return model
+```
+
+Step by step:
+
+1. `loaded_model = FG_MFN(CFG).to(DEVICE)`  
+   - Construct the model using the config `CFG`.
+   - Move it to `DEVICE` (GPU or CPU).
+
+2. If the checkpoint file exists:
+
+   ```python
+   if os.path.exists(MODEL_PATH):
+       loaded_model.load_state_dict(
+           torch.load(MODEL_PATH, map_location=DEVICE)
+       )
+   ```
+
+   - Load saved weights into the model.
+   - `map_location=DEVICE` ensures weights are loaded onto the correct device.
+
+3. Else:
+
+   ```python
+   else:
+       print("[WARNING] Model checkpoint not found. Using random weights.")
+   ```
+
+   - Warn that no checkpoint was found → the model will use randomly initialized weights (will still run, but predictions won’t be meaningful).
+
+4. `loaded_model.eval()`  
+   - Put the model into evaluation mode (disables dropout, uses running stats in batchnorm, etc).
+
+5. Cache and return:
+
+   ```python
+   model = loaded_model
+   return model
+   ```
+
+---
+
+If something goes wrong in the `try`:
+
+```python
+    except Exception as e:
+        print(f"[ERROR] Failed to load model: {e}")
+        loaded_model = FG_MFN(CFG).to(DEVICE)
+        loaded_model.eval()
+        model = loaded_model
+        return model
+```
+
+- Print an error.
+- Still create a fresh `FG_MFN(CFG)` model with random weights.
+- Set it to eval mode.
+- Cache and return it.
+
+So `load_model()` **always returns a model instance**, even if it’s not properly loaded from disk.
+
+---
+
+## 8. Label maps: mapping indices → label names
+
+```python
+# ------------------ LABEL MAPS ------------------
+def get_label_maps():
+    label_maps = {}
+    attributes = CFG.get("ATTRIBUTES", {})
+    for attr, cfg in attributes.items():
+        label_maps[attr] = cfg.get("labels", [])
+    return label_maps
+```
+
+- `CFG["ATTRIBUTES"]` is expected to look like:
+
+  ```json
+  "ATTRIBUTES": {
+    "sentiment": {
+      "num_classes": 3,
+      "labels": ["negative", "neutral", "positive"]
+    },
+    "emotion": {
+      "num_classes": 6,
+      "labels": ["joy", "sadness", ...]
+    },
+    ...
+  }
+  ```
+
+- The function builds a `label_maps` dict:
+
+  ```python
+  {
+    "sentiment": ["negative", "neutral", "positive"],
+    "emotion": ["joy", "sadness", ...],
+    ...
+  }
+  ```
+
+Used later to turn predicted class indices into human-friendly text labels.
+
+---
+
+```python
+LABEL_MAPS = get_label_maps()
+```
+
+- Precomputes the label maps once, at import time.
+
+---
+
+## 9. Text utilities (keyword extraction, money mentions, etc.)
+
+These functions are simple text analyzers that run on the OCR text to give extra information.
+
+### 9.1 `extract_keywords`
+
+```python
+def extract_keywords(text):
+    if not text:
+        return ""
+```
+
+- If `text` is empty or `None`, return empty string.
+
+```python
+    stopwords = {
+        "the", "a", "an", "is", "are", "and", "or", "to", "for",
+        "of", "in", "on", "at", "with", "your", "you", "we",
+        "our", "this", "that"
+    }
+```
+
+- A small set of common words to ignore.
+
+```python
+    words = re.findall(r"\b[A-Za-z]{3,}\b", text)
+```
+
+- `re.findall` finds all substrings matching:
+  - `\b` – word boundary
+  - `[A-Za-z]{3,}` – at least 3 letters (no digits, ignore very short words)
+- `words` becomes a list like `["Limited", "Offer", "Only", "Today"]`.
+
+```python
+    keywords = [w.capitalize() for w in words if w.lower() not in stopwords]
+```
+
+- Filter out stopwords.
+- Capitalize first letter of each word.
+
+Now `keywords` is a list of “important” words.
+
+```python
+    seen = set()
+    unique = []
+    for w in keywords:
+        if w.lower() not in seen:
+            seen.add(w.lower())
+            unique.append(w)
+```
+
+- Removes duplicates while preserving order.
+- `seen` tracks which words (in lowercase) we’ve already added.
+
+```python
+    return " ".join(unique[:5])
+```
+
+- Take at most 5 unique keywords.
+- Join them with spaces: `"Limited Offer Today"`.
+
+So:
+
+> `extract_keywords(text)` → a short keyword summary string (up to 5 keywords).
+
+---
+
+### 9.2 `extract_monetary_mention`
+
+```python
+def extract_monetary_mention(text):
+    if not text:
+        return "None"
+```
+
+- If no text, return `"None"`.
+
+```python
+    patterns = [
+        r"\d+%\s*(?:OFF|off|discount)",
+        r"(?:Rs\.?|INR|USD|\$|₹)\s*\d+(?:,\d{3})*(?:\.\d{2})?",
+        r"(?:FREE|Free|free)",
+    ]
+```
+
+- List of regex patterns to detect:
+  - Discounts like `20% OFF`, `50% discount`.
+  - Prices like `Rs 499.99`, `INR 1,999`, `$10`, `₹300`.
+  - The word “FREE” in any case.
+
+```python
+    for p in patterns:
+        m = re.search(p, text)
+        if m:
+            return m.group(0)
+```
+
+- For each pattern:
+  - Search in the text.
+  - If a match is found, return the matched substring (e.g. `"50% OFF"`, `"₹1,999"`, `"FREE"`).
+
+```python
+    return "None"
+```
+
+- If none of the patterns match, return `"None"`.
+
+So:
+
+> `extract_monetary_mention(text)` → something like `"50% OFF"`, `"$10.99"`, `"FREE"`, or `"None"`.
+
+---
+
+### 9.3 `extract_call_to_action`
+
+```python
+def extract_call_to_action(text):
+    if not text:
+        return "None"
+```
+
+- Empty text → `"None"`.
+
+```python
+    patterns = [
+        r"(?:Buy|Shop|Order|Get|Grab|Claim)\s*(?:Now|Today)?",
+        r"(?:Limited\s*Offer|Hurry|Act\s*Now)",
+    ]
+```
+
+- Looks for common marketing call-to-action phrases:
+  - `Buy Now`, `Shop Today`, `Get Now`, etc.
+  - `Limited Offer`, `Hurry`, `Act Now`.
+
+```python
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            return m.group(0)
+```
+
+- Case-insensitive search (`re.IGNORECASE`).
+- Return the first matching phrase, if found.
+
+```python
+    return "None"
+```
+
+So:
+
+> `extract_call_to_action(text)` → e.g. `"Buy Now"`, `"Limited Offer"`, or `"None"`.
+
+---
+
+### 9.4 `extract_objects_mentioned`
+
+```python
+def extract_objects_mentioned(text):
+    if not text:
+        return "Unknown"
+```
+
+- Empty → `"Unknown"`.
+
+```python
+    mapping = {
+        "Phone": r"\b(phone|iphone|mobile)\b",
+        "Laptop": r"\b(laptop|computer|pc)\b",
+        "Food": r"\b(food|burger|coffee|drink)\b",
+        "Clothing": r"\b(shirt|dress|jeans)\b",
+    }
+```
+
+- Maps simple object category names to regex patterns.
+
+```python
+    found = []
+    text = text.lower()
+    for k, p in mapping.items():
+        if re.search(p, text):
+            found.append(k)
+```
+
+- Lowercase the text.
+- For each category (e.g., `"Phone"`):
+  - If its pattern matches anywhere, add the category name to `found`.
+
+```python
+    return ", ".join(found) if found else "General"
+```
+
+- If any categories matched:
+  - Join them like `"Phone, Laptop"`.
+- Otherwise:
+  - Return `"General"`.
+
+So:
+
+> `extract_objects_mentioned(text)` → `"Phone"`, `"Food"`, or a comma-separated list, or `"General"`.
+
+---
+
+## 10. OCR extraction
+
+```python
+# ------------------ OCR ------------------
+def extract_text(image):
+    try:
+        if isinstance(image, Image.Image):
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            image.save(tmp.name)
+            path = tmp.name
+        else:
+            path = image
+```
+
+- This function takes either:
+  - a PIL `Image.Image`, or
+  - a file path string.
+
+If it’s a PIL image:
+
+- Create a temporary file (`tempfile.NamedTemporaryFile`) with `.png` suffix.
+- Save the image to that path.
+- Use this `path` for OCR.
+
+If it’s already a file path:
+
+- Just use it directly.
+
+This is because `ocr_model.predict` expects a file path, not a PIL image.
+
+---
+
+```python
+        result = list(ocr_model.predict(path))
+
+        texts, scores = [], []
+        if result and isinstance(result[0], dict):
+            texts = result[0].get("rec_texts", [])
+            scores = result[0].get("rec_scores", [])
+```
+
+- `ocr_model.predict(path)` returns some iterable with OCR results.
+- Convert to list: `result`.
+- If `result` is non-empty and `result[0]` is a dict:
+  - Get:
+    - `rec_texts`: list of recognized text segments.
+    - `rec_scores`: list of confidence scores for each segment.
+
+```python
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+        return " ".join(texts).strip(), avg_score
+```
+
+- Compute average confidence across segments (or 0.0 if no scores).
+- Join all text segments with spaces:
+  - `"Hello"`, `"World"` → `"Hello World"`.
+- Strip leading/trailing spaces.
+- Return a tuple `(combined_text, avg_score)`.
+
+If something goes wrong:
+
+```python
+    except Exception:
+        return "", 0.0
+```
+
+- Return empty text and zero confidence.
+
+So:
+
+> `extract_text(image)` → `(ocr_text, avg_ocr_confidence)`.
+
+---
+
+## 11. Main prediction function
+
+```python
+# ------------------ INFERENCE ------------------
+def predict(images):
+    results = []
+```
+
+- `predict(images)` is the main entry point, used by the API.
+- `images` is a list of PIL `Image` objects.
+- `results` will be a list of dictionaries, one per image.
+
+---
+
+### 11.1 First, run OCR on all images
+
+```python
+    ocr_texts = []
+    for img in images:
+        text, _ = extract_text(img)
+        ocr_texts.append(text)
+```
+
+- For each image:
+  - Call `extract_text(img)` to get OCR text (ignore the confidence score here).
+  - Append the text to `ocr_texts`.
+
+So now you have:
+
+- `images = [img_0, img_1, ..., img_N]`
+- `ocr_texts = [text_0, text_1, ..., text_N]`
+
+These texts will be fed into the text encoder.
+
+---
+
+### 11.2 Process images and texts in batches
+
+```python
+    for i in range(0, len(images), BATCH_SIZE):
+        batch_imgs = images[i:i + BATCH_SIZE]
+        batch_texts = ocr_texts[i:i + BATCH_SIZE]
+```
+
+- Loop from `i = 0` to the end, stepping by `BATCH_SIZE` (16).
+- For each iteration:
+  - `batch_imgs` – up to 16 images.
+  - `batch_texts` – corresponding OCR texts.
+
+This is batching: process several samples at once for efficiency.
+
+---
+
+#### 11.2.1 Prepare image tensor batch
+
+```python
+        img_tensor = torch.stack(
+            [transform(img) for img in batch_imgs]
+        ).to(DEVICE)
+```
+
+- For each `img` in `batch_imgs`:
+  - Apply `transform(img)`:
+    - Resize → ToTensor → Normalize.
+    - Yields a tensor of shape `[3, 224, 224]`.
+
+- `torch.stack([...])` combines them into a single tensor:
+  - Shape: `[batch_size, 3, 224, 224]`.
+
+- `.to(DEVICE)` moves it to GPU or CPU.
+
+Visually:
+
+> [img_0, img_1, …] → transform each → stack into big batch tensor → send to GPU/CPU.
+
+---
+
+#### 11.2.2 Prepare tokenized text batch
+
+```python
+        tokens = [tokenize_text(t) for t in batch_texts]
+        text_ids = torch.stack([t["input_ids"] for t in tokens]).to(DEVICE)
+        masks = torch.stack([t["attention_mask"] for t in tokens]).to(DEVICE)
+```
+
+- `tokenize_text(t)` (imported from `preprocessing.text_preprocessing`) returns a dict:
+
+  ```python
+  {
+    "input_ids": tensor([MAX_TEXT_LEN]),
+    "attention_mask": tensor([MAX_TEXT_LEN])
+  }
+  ```
+
+- `tokens` is thus a list of those dicts.
+
+- `text_ids`:
+  - `torch.stack([t["input_ids"] for t in tokens])`
+  - Shape: `[batch_size, seq_len]` (e.g., `[16, 128]`).
+  - Move to `DEVICE`.
+
+- `masks`:
+  - `torch.stack([t["attention_mask"] for t in tokens])`
+  - Same shape.
+  - Move to `DEVICE`.
+
+So:
+
+> `batch_texts` strings → tokenization → `text_ids` tensor and `masks` tensor.
+
+---
+
+#### 11.2.3 Load model and run forward pass
+
+```python
+        model_instance = load_model()
+        with torch.no_grad():
+            outputs = model_instance(
+                img_tensor,
+                text_ids,
+                attention_mask=masks
+            )
+```
+
+- `model_instance = load_model()`:
+  - Ensures the `FG_MFN` model is loaded and cached.
+  - Returns the same model on subsequent calls.
+
+- `with torch.no_grad():`  
+  - Runs the model without tracking gradients (saves memory and speeds up inference).
+
+- `outputs = model_instance(img_tensor, text_ids, attention_mask=masks)`
+
+Given your `FG_MFN.forward`:
+
+- It returns a dictionary:
+
+  ```python
+  {
+    "sentiment": tensor([batch_size, num_sentiment_classes]),
+    "emotion":   tensor([batch_size, num_emotion_classes]),
+    ...
+  }
+  ```
+
+So `outputs[attr][j]` is the logit vector for sample `j` and attribute `attr`.
+
+---
+
+### 11.3 Build result entries per image in this batch
+
+```python
+        for j in range(len(batch_imgs)):
+            result = {"ocr_text": batch_texts[j]}
+```
+
+- Loop over each sample `j` in the batch.
+- Start a `result` dict with the OCR text for that image.
+
+---
+
+#### 11.3.1 Track a “primary” label for legacy fields
+
+```python
+            primary_label = None
+            primary_idx = None
+            primary_conf = None
+```
+
+- These will store a main label and confidence, for compatibility with older API expectations (`predicted_label_text`, `confidence_score`, etc.).
+
+---
+
+#### 11.3.2 For each attribute, compute predicted label and confidence
+
+```python
+            for attr in ATTRIBUTE_NAMES:
+                if attr not in outputs:
+                    continue
+```
+
+- Loop over all attribute names (`"sentiment"`, `"emotion"`, etc.).
+- If a particular attribute is not present in the model outputs, skip it.
+
+---
+
+```python
+                probs = torch.softmax(outputs[attr][j], dim=0)
+                idx = int(torch.argmax(probs))
+                conf = float(torch.max(probs))
+```
+
+- `outputs[attr][j]` is a vector of logits for sample `j` and attribute `attr`.
+- `torch.softmax(..., dim=0)` converts logits to probabilities across classes.
+- `torch.argmax(probs)` gives the index of the highest-probability class.
+- `torch.max(probs)` gives that maximum probability (confidence).
+
+So:
+
+- `idx` – predicted class index (e.g., 2).
+- `conf` – confidence score between 0 and 1.
+
+---
+
+```python
+                labels = LABEL_MAPS.get(attr, [])
+                label = labels[idx] if idx < len(labels) else str(idx)
+```
+
+- `labels` – list of label names for this attribute (from `LABEL_MAPS`).
+  - e.g., for sentiment: `["negative", "neutral", "positive"]`.
+
+- If `idx` is within range, `label = labels[idx]`.
+- Else, fallback to using the index as a string.
+
+Now we have a human-readable label or at least some identifier.
+
+---
+
+```python
+                result[attr] = label
+                result[f"{attr}_confidence"] = conf
+```
+
+- Store the label and its confidence in the result dict.
+
+Example:
+
+```python
+result["sentiment"] = "positive"
+result["sentiment_confidence"] = 0.93
+```
+
+---
+
+```python
+                if primary_label is None:
+                    primary_label = label
+                    primary_idx = idx
+                    primary_conf = conf
+```
+
+- For the **first** attribute encountered (in the order of `ATTRIBUTE_NAMES`), set that as the “primary” label.
+- This is used to populate generic fields:
+  - `predicted_label_text`
+  - `predicted_label_num`
+  - `confidence_score`
+
+So typically, if `sentiment` is first in `ATTRIBUTE_NAMES`, it becomes the primary label.
+
+---
+
+#### 11.3.3 Fill legacy fields and extra text-based info
+
+```python
+            # legacy fields for tests
+            result["predicted_label_text"] = primary_label or "Unknown"
+            result["predicted_label_num"] = primary_idx if primary_idx is not None else -1
+            result["confidence_score"] = primary_conf if primary_conf else 0.0
+```
+
+- `predicted_label_text`: the primary label text (or `"Unknown"` if nothing was predicted).
+- `predicted_label_num`: the numeric index (or -1 if none).
+- `confidence_score`: the primary confidence (or 0.0 if missing).
+
+These make the output compatible with earlier simple APIs expecting a single label per image.
+
+---
+
+```python
+            result["keywords"] = extract_keywords(batch_texts[j])
+            result["monetary_mention"] = extract_monetary_mention(batch_texts[j])
+            result["call_to_action"] = extract_call_to_action(batch_texts[j])
+            result["object_detected"] = extract_objects_mentioned(batch_texts[j])
+```
+
+- Apply the text utilities to the OCR text for this sample:
+  - `keywords` – up to 5 important words.
+  - `monetary_mention` – first found price or “FREE” or discount, or `"None"`.
+  - `call_to_action` – call-to-action phrase if any, else `"None"`.
+  - `object_detected` – rough category of object mentioned.
+
+Adds richer metadata, useful for analytics or display.
+
+---
+
+```python
+            results.append(result)
+```
+
+- Add this fully populated `result` dict to the `results` list.
+
+---
+
+### 11.4 Return all results
+
+```python
+    return results
+```
+
+`results` is a list, one entry per input image, each entry containing:
+
+- OCR text (`"ocr_text"`)
+- For each attribute:
+  - Label, e.g. `"sentiment": "positive"`
+  - Confidence, e.g. `"sentiment_confidence": 0.93`
+- Legacy fields:
+  - `"predicted_label_text"`
+  - `"predicted_label_num"`
+  - `"confidence_score"`
+- Extra text analytics:
+  - `"keywords"`
+  - `"monetary_mention"`
+  - `"call_to_action"`
+  - `"object_detected"`
+
+This is exactly what `server/app.py` returns as part of the `/predict` response, just with `"filename"` added there.
+
+---
+
+## End-to-end flow overview
+
+Putting everything together:
+
+```text
+List of PIL images
+  │
+  ├─ For each image:
+  │     └─ OCR → extract_text(image) → "ocr_text"
+  │
+  ├─ Group images in batches of up to 16
+  │    ├─ Transform images → batch tensor [B, 3, 224, 224]
+  │    ├─ Tokenize OCR texts → text_ids [B, L], masks [B, L]
+  │    ├─ Load FG_MFN model (once, cached)
+  │    └─ Model forward pass:
+  │          outputs[attr] → logits per attribute
+  │
+  ├─ For each sample in batch:
+  │    ├─ For each attribute:
+  │    │     ├─ softmax → probabilities
+  │    │     ├─ argmax → class index
+  │    │     ├─ map index → label using LABEL_MAPS
+  │    │     └─ store label + confidence
+  │    ├─ Choose first attribute as primary label
+  │    ├─ Compute extra fields from OCR text:
+  │    │     ├─ keywords
+  │    │     ├─ monetary_mention
+  │    │     ├─ call_to_action
+  │    │     └─ object_detected
+  │    └─ Append result dict to results list
+  │
+  └─ Return results list
+```
+
+These results then flow back through the FastAPI `/predict` endpoint and are delivered to the client as JSON.
+
+If you’d like, I can next:
+
+- Sketch what a single result dictionary might look like for a sample ad image.
+- Or show how you’d modify this to only predict a subset of attributes or to include raw probabilities.

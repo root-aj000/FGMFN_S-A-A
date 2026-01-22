@@ -1,0 +1,365 @@
+This file defines a **Logger** class that records training metrics in two ways:
+
+- To **TensorBoard** (for nice interactive graphs)
+- To a **CSV file** (for simple tabular analysis)
+
+It automatically creates a new log folder per run, using a timestamp.
+
+I’ll go through it line by line.
+
+---
+
+## 1. Imports and global path
+
+```python
+import os
+from torch.utils.tensorboard import SummaryWriter
+import csv
+from datetime import datetime
+from utils.path import LOG_DIR
+
+tranning_log_dir = LOG_DIR
+```
+
+- `import os`  
+  Used for file path operations and creating directories.
+
+- `from torch.utils.tensorboard import SummaryWriter`  
+  `SummaryWriter` is the main class to log values to TensorBoard:
+  - Scalars (loss, accuracy, etc.)
+  - Images, histograms, etc. (here we only use scalars).
+
+- `import csv`  
+  Python’s CSV library for writing metrics to `.csv` files.
+
+- `from datetime import datetime`  
+  To get the current date and time, which will be used in folder names.
+
+- `from utils.path import LOG_DIR`  
+  Imports a base logging directory from your central path config.
+
+- `tranning_log_dir = LOG_DIR`  
+  Sets a module-level variable (note: “tranning” is a typo of “training”) to the same path as `LOG_DIR`.  
+  This is just a local alias; it doesn’t change the value.
+
+---
+
+## 2. Logger class
+
+```python
+class Logger:
+```
+
+- `Logger` is a reusable helper to:
+
+  - Create a **timestamped subdirectory** inside your log directory.
+  - Create a TensorBoard writer that writes logs there.
+  - Create and append to a `training_log.csv` file in that same folder.
+  - Provide a single method `log_metrics` to record metrics every epoch/step.
+
+---
+
+## 3. Constructor: `__init__`
+
+```python
+    def __init__(self, tranning_log_dir):
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.tensorboard_dir = os.path.join(tranning_log_dir, timestamp)
+        os.makedirs(self.tensorboard_dir, exist_ok=True)
+        self.writer = SummaryWriter(self.tensorboard_dir)
+        self.csv_file = os.path.join(self.tensorboard_dir, "training_log.csv")
+        self.csv_initialized = False
+```
+
+### Parameters
+
+- `tranning_log_dir`  
+  The **base directory** where all training runs should be logged.
+  - You’d typically pass in `LOG_DIR` or a subdirectory of it.
+
+### Steps inside
+
+1. **Create a timestamp for this run**
+
+   ```python
+   timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+   ```
+
+   - `datetime.now()` – current date and time.
+   - `.strftime("%Y%m%d-%H%M%S")` – formats it as a string like:
+     - `20260122-143512` (YYYYMMDD-HHMMSS).
+
+   This ensures that each training run has a **unique folder**, based on start time.
+
+2. **Define the TensorBoard run directory**
+
+   ```python
+   self.tensorboard_dir = os.path.join(tranning_log_dir, timestamp)
+   ```
+
+   - Joins the base log directory and the timestamp to form a unique subfolder.
+   - For example:
+     - `tranning_log_dir = "logs"`
+     - `timestamp = "20260122-143512"`
+     - `self.tensorboard_dir = "logs/20260122-143512"`
+
+3. **Create that directory**
+
+   ```python
+   os.makedirs(self.tensorboard_dir, exist_ok=True)
+   ```
+
+   - Create it if it doesn’t exist yet.
+   - If it already exists, `exist_ok=True` avoids an error.
+
+4. **Initialize the TensorBoard writer**
+
+   ```python
+   self.writer = SummaryWriter(self.tensorboard_dir)
+   ```
+
+   - `SummaryWriter(log_dir)` knows where to store events (for TensorBoard).
+   - When you call `writer.add_scalar(...)`, it writes data into files inside this folder.
+
+5. **Set up CSV file path**
+
+   ```python
+   self.csv_file = os.path.join(self.tensorboard_dir, "training_log.csv")
+   ```
+
+   - Path to a CSV file named `training_log.csv` inside the same run folder.
+
+6. **Track whether CSV header is written**
+
+   ```python
+   self.csv_initialized = False
+   ```
+
+   - Initially, the CSV file has not been initialized (no header row written).
+   - The first time `log_metrics` is called, it will create the file and write the header.
+
+---
+
+## 4. `log_metrics` method
+
+```python
+    def log_metrics(self, metrics_dict, epoch):
+        """
+        metrics_dict: dict, e.g. {"train_loss": 0.1, "val_loss": 0.2, ...}
+        """
+```
+
+- `metrics_dict`: a dictionary of metric names to values, e.g.:
+
+  ```python
+  {
+    "train_loss": 0.314,
+    "val_loss": 0.280,
+    "train_accuracy": 0.90,
+    "val_accuracy": 0.88
+  }
+  ```
+
+- `epoch`: an integer index (could be epoch number or step number).
+
+This method logs all these metrics for the given epoch to:
+
+1. TensorBoard
+2. The CSV file
+
+---
+
+### 4.1 Log to TensorBoard
+
+```python
+        # TensorBoard logging
+        for key, value in metrics_dict.items():
+            self.writer.add_scalar(key, value, epoch)
+```
+
+- Loop over each key/value pair in the metrics dict.
+
+- `self.writer.add_scalar(key, value, epoch)`:
+
+  - `key` – the tag name (e.g., `"train_loss"`).
+  - `value` – the scalar value (e.g., `0.314`).
+  - `epoch` – the global step / x-axis value.
+
+In TensorBoard:
+
+- You’ll see a plot for each metric name.
+- The x-axis is `epoch`, the y-axis is the metric value.
+
+For example:
+
+```python
+logger.log_metrics({"train_loss": 0.9, "val_loss": 1.1}, epoch=1)
+logger.log_metrics({"train_loss": 0.7, "val_loss": 0.9}, epoch=2)
+```
+
+In TensorBoard:
+
+- The `"train_loss"` graph will show points (1, 0.9), (2, 0.7), etc.
+- The `"val_loss"` graph will show (1, 1.1), (2, 0.9), etc.
+
+---
+
+### 4.2 Initialize CSV file and write header (first time only)
+
+```python
+        # CSV logging
+        if not self.csv_initialized:
+            with open(self.csv_file, mode='w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=["epoch"] + list(metrics_dict.keys()))
+                writer.writeheader()
+            self.csv_initialized = True
+```
+
+- `if not self.csv_initialized:`  
+  - Check if this is the **first time** logging metrics.
+
+- If yes:
+
+  1. Open `self.csv_file` in write mode (`"w"`):
+
+     ```python
+     with open(self.csv_file, mode='w', newline='') as f:
+     ```
+
+     - `newline=''` helps avoid extra blank lines on some OSes.
+  
+  2. Create a CSV `DictWriter`:
+
+     ```python
+     writer = csv.DictWriter(f, fieldnames=["epoch"] + list(metrics_dict.keys()))
+     ```
+
+     - `fieldnames` – column headers:
+       - First column is `"epoch"`.
+       - Then all metric keys, in the order provided by `metrics_dict.keys()`.
+
+     Example:
+     - metrics_dict keys: `"train_loss"`, `"val_loss"`
+     - `fieldnames` = `["epoch", "train_loss", "val_loss"]`.
+
+  3. Write the header row:
+
+     ```python
+     writer.writeheader()
+     ```
+
+     Resulting header in CSV:
+
+     ```csv
+     epoch,train_loss,val_loss
+     ```
+
+  4. Mark CSV as initialized:
+
+     ```python
+     self.csv_initialized = True
+     ```
+
+So the header is written exactly once, when the first set of metrics is logged.
+
+---
+
+### 4.3 Append a new row for this epoch
+
+```python
+        with open(self.csv_file, mode='a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=["epoch"] + list(metrics_dict.keys()))
+            row = {"epoch": epoch, **metrics_dict}
+            writer.writerow(row)
+```
+
+- `open(self.csv_file, mode='a', newline='')`:
+  - Open the file in append mode (`"a"`): add new lines without overwriting existing content.
+
+- Again define a `DictWriter` with the same fieldnames:
+  - `["epoch"] + list(metrics_dict.keys())`.
+
+- Construct a `row` dictionary:
+
+  ```python
+  row = {"epoch": epoch, **metrics_dict}
+  ```
+
+  - This merges:
+    - `"epoch": epoch`  
+    - plus all key-value pairs from `metrics_dict`.
+
+  Example:
+
+  ```python
+  epoch = 2
+  metrics_dict = {"train_loss": 0.7, "val_loss": 0.9}
+
+  row = {
+    "epoch": 2,
+    "train_loss": 0.7,
+    "val_loss": 0.9
+  }
+  ```
+
+- `writer.writerow(row)`:
+  - Writes a new line to the CSV with those values.
+
+Over time, `training_log.csv` will look like:
+
+```csv
+epoch,train_loss,val_loss
+1,0.9,1.1
+2,0.7,0.9
+3,0.5,0.8
+...
+```
+
+This gives you a simple table you can open in Excel, pandas, etc.
+
+---
+
+## 5. `close` method
+
+```python
+    def close(self):
+        self.writer.close()
+```
+
+- Closing the TensorBoard writer properly flushes any remaining data to disk.
+
+You should call `logger.close()` at the end of training (or when you’re done logging) to ensure all events are saved.
+
+---
+
+## How you typically use this Logger
+
+In a training script, you might do:
+
+```python
+from training.logger import Logger, tranning_log_dir
+
+logger = Logger(tranning_log_dir)
+
+for epoch in range(num_epochs):
+    # ... training loop, compute metrics ...
+    metrics = {
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "train_accuracy": train_acc,
+        "val_accuracy": val_acc,
+    }
+    logger.log_metrics(metrics, epoch)
+
+logger.close()
+```
+
+Then:
+
+- Run `tensorboard --logdir <LOG_DIR>` to see interactive graphs for all runs.
+- Open `training_log.csv` in each timestamped folder to see the raw metric values per epoch.
+
+If you’d like, I can:
+
+- Show how to point TensorBoard at these logs and interpret the graphs.
+- Or extend this logger to also log per-attribute metrics (like your evaluation script does).

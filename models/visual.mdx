@@ -1,0 +1,258 @@
+Here’s what this `VisualModule` does, step by step, in plain language and with a mental picture of the flow.
+
+---
+
+## 1. Imports
+
+```python
+import torch
+import torch.nn as nn
+import torchvision.models as models
+```
+
+- `import torch`  
+  Brings in PyTorch, the library for building and running neural networks.
+
+- `import torch.nn as nn`  
+  Gives access to neural network building blocks (layers, etc.) under the name `nn`.
+
+- `import torchvision.models as models`  
+  Imports **pre-built vision models** (like ResNet, etc.) from `torchvision`.  
+  This is where `models.resnet50` comes from.
+
+---
+
+## 2. Defining `VisualModule`
+
+```python
+class VisualModule(nn.Module):
+```
+
+- Defines a class called `VisualModule`.
+- It inherits from `nn.Module`, so it behaves like a standard PyTorch model block.
+
+Conceptually:
+
+> `VisualModule` is the **image understanding component** that:
+> - Takes an image (as a tensor)  
+> - Sends it through a pre-trained CNN (like ResNet‑50)  
+> - Outputs a fixed-size vector of features (e.g., length 512).
+
+This is the “image brain” that plugs into a larger multimodal system.
+
+---
+
+## 3. Constructor: `__init__`
+
+```python
+    def __init__(self, backbone="resnet50", pretrained=True, out_features=512, freeze=False):
+        super(VisualModule, self).__init__()
+```
+
+- `__init__` runs when you create `VisualModule(...)`.
+
+- Parameters:
+  - `backbone="resnet50"`  
+    Which image model to use. Right now, only `"resnet50"` is supported.
+  - `pretrained=True`  
+    Whether to load **pre-trained weights** (usually trained on ImageNet).  
+    That means it already “knows” a lot about general visual patterns.
+  - `out_features=512`  
+    The size (length) of the feature vector we want at the end.
+  - `freeze=False`  
+    Whether to “freeze” the backbone (stop its parameters from being updated).
+
+- `super(VisualModule, self).__init__()`  
+  Initializes the base `nn.Module`.
+
+---
+
+### 3.1 Choose and build the backbone
+
+```python
+        if backbone == "resnet50":
+            self.model = models.resnet50(pretrained=pretrained)
+```
+
+- Checks which backbone was requested. If it’s `"resnet50"`:
+  - `self.model = models.resnet50(pretrained=pretrained)`  
+    Loads a ResNet‑50 model from `torchvision.models`.
+
+If `pretrained=True`:
+- This ResNet is loaded with weights learned from a huge image dataset (ImageNet), so it recognizes many basic visual patterns (edges, textures, object parts, etc.).
+
+Visually:
+
+> Image → ResNet‑50 (convolutional layers + pooling + final FC layer)  
+> → outputs classification logits (by default).
+
+We’re going to customize the final step.
+
+---
+
+### 3.2 Optionally freeze the backbone
+
+```python
+            # Freeze backbone if requested
+            if freeze:
+                for param in self.model.parameters():
+                    param.requires_grad = False
+```
+
+- If `freeze` is `True`:
+  - Loops over **every parameter** in `self.model` (the ResNet).
+  - Sets `param.requires_grad = False`.
+
+Effect:
+
+- During training, these parameters will **not** be updated.
+- The pre-trained ResNet acts as a **fixed feature extractor**.
+- Only the new final layer (which we’ll add next) will be trainable.
+
+Analogy:
+
+> Freeze = “Lock the internal layers of ResNet. Use them as they are.”
+
+If `freeze=False`, the ResNet is **fine-tuneable**: it can adapt its internal filters to your specific image domain.
+
+---
+
+### 3.3 Replace the final fully connected layer
+
+```python
+            in_features = self.model.fc.in_features
+            # Replace final layer (this one will always be trainable)
+            self.model.fc = nn.Linear(in_features, out_features)
+```
+
+- `in_features = self.model.fc.in_features`  
+  - `self.model.fc` is the **original last linear layer** of ResNet.
+  - `.in_features` is how many inputs that layer expects (e.g., 2048 for ResNet‑50).
+  - We store that number.
+
+- `self.model.fc = nn.Linear(in_features, out_features)`  
+  - We **replace** the original classification layer with our own.
+  - New layer:
+    - Input size: `in_features` (e.g., 2048)
+    - Output size: `out_features` (e.g., 512)
+
+Why do this?
+
+- The original ResNet‑50 is trained to predict 1000 ImageNet classes.
+- We don’t want ImageNet classes here; we want a **general feature vector** of size `out_features` (like 512) that we can feed into other parts of our system.
+- So we keep all the convolutional layers and just swap out the final layer.
+
+Important note:
+
+- Even if `freeze=True` was used above, this **new** linear layer is **not frozen** (because we just created it now).  
+  It will always be trainable.
+
+Visually:
+
+Original ResNet‑50 (simplified):
+
+```text
+Image → Conv + Pool + ... + Global Pool → FC (2048 → 1000 classes)
+```
+
+Our modified ResNet‑50:
+
+```text
+Image → Conv + Pool + ... + Global Pool → FC (2048 → out_features)
+```
+
+So now:
+
+> Input image → `VisualModule` → feature vector of length `out_features` (e.g., 512)
+
+---
+
+### 3.4 Handle other backbones
+
+```python
+        else:
+            raise NotImplementedError(f"Backbone {backbone} not implemented")
+```
+
+- If `backbone` is anything other than `"resnet50"`, we raise an error.
+
+- This is a way to say:  
+  “Right now, we only support ResNet‑50. If you ask for something else, the code doesn’t know how to handle it.”
+
+Later, you could extend this with other models (e.g., `"resnet18"`, `"efficientnet"`, etc.) by adding more `elif` branches.
+
+---
+
+## 4. Forward method: how images flow through
+
+```python
+    def forward(self, x):
+        return self.model(x)  # [batch, out_features]
+```
+
+- `forward` defines what happens when you call the module, like:
+
+```python
+features = visual_module(images)
+```
+
+- `x` is expected to be a batch of images:
+  - Shape: `[batch_size, 3, height, width]`
+  - Example: `[8, 3, 224, 224]` for 8 RGB images.
+
+- `return self.model(x)`  
+  We simply pass the batch of images through our modified ResNet‑50 (`self.model`), which:
+  - Processes them through all its convolutional layers.
+  - Performs global pooling.
+  - Then applies our **new** final linear layer (`fc`) to get features of size `out_features`.
+
+Output:
+
+- A tensor of shape `[batch_size, out_features]`.
+
+So if:
+
+- `batch_size = 8`
+- `out_features = 512`
+
+Then:
+
+- Output shape = `[8, 512]`.
+
+Each row is a compact representation of the corresponding image.
+
+---
+
+## Big-picture view
+
+You can visualize `VisualModule` as:
+
+```text
+Input: batch of images  (B, 3, H, W)
+         │
+         ▼
+   ResNet-50 backbone
+ (pretrained, optionally frozen)
+         │
+         ▼
+ Global average pooling
+         │
+         ▼
+   New final FC layer
+   (in_features → out_features)
+         │
+         ▼
+Output: image feature vectors (B, out_features)
+```
+
+These feature vectors can then be:
+
+- Combined with text features (as in your `FG_MFN` model),
+- Or fed into classifiers, regressors, etc.
+
+---
+
+If you want, next I can:
+
+- Show how to instantiate and use `VisualModule` with a real image tensor.
+- Or explain how to add support for another backbone (e.g., `resnet18`).

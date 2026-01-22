@@ -1,0 +1,408 @@
+This script is a **test data generator**.  
+It creates:
+
+- A small folder with a few **dummy images** that look like documents with text.
+- A **CSV file** describing those images, with either:
+  - full multi-attribute labels (theme, sentiment, etc.), or  
+  - a single legacy label.
+
+This is useful for quickly testing your whole pipeline (dataset, model, server) without needing real annotated data.
+
+I’ll go through it section by section.
+
+---
+
+## 1. Imports
+
+```python
+import os
+import cv2
+import numpy as np
+import pandas as pd
+import random
+import shutil
+```
+
+- `os` – file paths, directory checks, creation/removal.
+- `cv2` – OpenCV, for creating and writing images.
+- `numpy as np` – numeric arrays; used to create the image pixels.
+- `pandas as pd` – for building and saving the CSV.
+- `random` – Python’s random module, used to assign random labels.
+- `shutil` – for deleting a directory tree (`rmtree`).
+
+---
+
+## 2. Attribute metadata
+
+```python
+# Attribute names matching the model config
+ATTRIBUTE_NAMES = [
+    "theme", "sentiment", "emotion", "dominant_colour", "attention_score",
+    "trust_safety", "target_audience", "predicted_ctr", "likelihood_shares"
+]
+```
+
+- This is the same list of attribute names used everywhere else (model, dataset, predict, etc.).
+
+```python
+# Number of classes per attribute (must match model_config.json)
+ATTRIBUTE_CLASSES = {
+    "theme": 10,
+    "sentiment": 3,
+    "emotion": 8,
+    "dominant_colour": 10,
+    "attention_score": 3,
+    "trust_safety": 3,
+    "target_audience": 8,
+    "predicted_ctr": 3,
+    "likelihood_shares": 3
+}
+```
+
+- For each attribute, this dictionary gives the **number of possible classes**.
+- This must line up with your `model_config.json`:
+  - If the model is configured with 10 `theme` classes, dummy data must also use 10.
+
+```python
+# Label names for each attribute
+ATTRIBUTE_LABELS = {
+    "theme": ["Food", "Fashion", "Tech", "Health", "Travel", "Finance", "Entertainment", "Sports", "Education", "Other"],
+    "sentiment": ["Positive", "Negative", "Neutral"],
+    "emotion": ["Excitement", "Trust", "Joy", "Fear", "Anger", "Sadness", "Surprise", "Anticipation"],
+    "dominant_colour": ["Red", "Blue", "Green", "Yellow", "Orange", "Purple", "Black", "White", "Brown", "Multi"],
+    "attention_score": ["High", "Medium", "Low"],
+    "trust_safety": ["Safe", "Unsafe", "Questionable"],
+    "target_audience": ["General", "Food Lovers", "Tech Enthusiasts", "Fashionistas", "Parents", "Professionals", "Fitness Enthusiasts", "Students"],
+    "predicted_ctr": ["High", "Medium", "Low"],
+    "likelihood_shares": ["High", "Medium", "Low"]
+}
+```
+
+- Human-readable label names for each attribute class.
+- These should also match what the model’s config expects.
+
+Example:
+
+- `sentiment` has 3 classes: index 0→"Positive", 1→"Negative", 2→"Neutral".
+- When you generate random labels, you pick an index, then the label string from this list.
+
+---
+
+## 3. `create_dummy_image` – make a fake document image
+
+```python
+def create_dummy_image(path, size=(640, 480), color=(255, 255, 255)):
+    """Creates a valid dummy JPG image (Document style)."""
+    img = np.zeros((size[1], size[0], 3), dtype=np.uint8)
+    img[:] = color
+```
+
+- `path` – where to save the image (full file path).
+- `size=(640, 480)` – width=640, height=480.
+- `color=(255, 255, 255)` – white background in BGR format.
+
+Steps:
+
+1. `np.zeros((size[1], size[0], 3), dtype=np.uint8)`:
+   - Creates an array of zeros, shape `(height, width, 3)`.
+   - `dtype=np.uint8` means values from 0 to 255 (standard image type).
+
+2. `img[:] = color`:
+   - Fills the entire image with the given color (white).
+
+So you get a blank white image.
+
+```python
+    # Add clear black text
+    cv2.putText(img, "TEST DOCUMENT TEXT 123", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+    cv2.putText(img, "Another line of text", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+```
+
+- Adds two lines of black text to the image:
+
+  - First line at position `(50, 100)` saying `"TEST DOCUMENT TEXT 123"`.
+  - Second line at `(50, 200)` saying `"Another line of text"`.
+
+- `cv2.FONT_HERSHEY_SIMPLEX` – a simple sans-serif font.
+- `1` – font scale (size).
+- `(0, 0, 0)` – black color in BGR.
+- `2` – thickness in pixels.
+
+Visually:
+
+```text
+White background with:
+"TEST DOCUMENT TEXT 123" near the top
+"Another line of text" below it
+```
+
+This looks like a simple **document-like image**, good for testing OCR pipelines.
+
+```python
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cv2.imwrite(path, img)
+```
+
+- Ensure the directory for `path` exists.
+- Write the image to disk as a JPG (or whatever extension you gave in `path`).
+
+---
+
+## 4. `setup_dummy_data` – create images + CSV
+
+```python
+def setup_dummy_data(base_dir, multi_attribute=True):
+    """Sets up a temporary directory with dummy images and a csv.
+    
+    Args:
+        base_dir: Directory to create test data in
+        multi_attribute: If True, generate all attribute columns; if False, use legacy format
+    """
+```
+
+- `base_dir` – main folder where dummy data will live.
+- `multi_attribute`:
+  - `True` → include all attribute columns (`sentiment_num`, `emotion_num`, etc.).
+  - `False` → old-style single `label_num` and `label_text`.
+
+---
+
+### 4.1 Clean & create base directory
+
+```python
+    if os.path.exists(base_dir):
+        shutil.rmtree(base_dir)
+    
+    image_dir = os.path.join(base_dir, "images")
+    os.makedirs(image_dir, exist_ok=True)
+```
+
+- If `base_dir` already exists, delete it entirely (`shutil.rmtree`).
+- Then create it fresh with a subdirectory `images/`:
+
+  - E.g. if `base_dir = "tmp_test_data"`, then `image_dir = "tmp_test_data/images"`.
+
+This ensures a clean slate each time you generate dummy data.
+
+---
+
+### 4.2 Generate 5 dummy images and label rows
+
+```python
+    # Create 5 dummy images
+    data = []
+    for i in range(5):
+        filename = f"img_{i}.jpg"
+        path = os.path.join(image_dir, filename)
+        create_dummy_image(path)
+```
+
+- Initialize an empty list `data` to hold CSV rows.
+
+- Loop `i` from 0 to 4 (5 images):
+
+  - `filename = "img_0.jpg"`, `"img_1.jpg"`, ..., `"img_4.jpg"`.
+  - `path` – full path to where the image will be stored.
+  - `create_dummy_image(path)` – call the function above to create the white document-style image with text.
+
+So you get 5 images: `img_0.jpg` … `img_4.jpg`.
+
+---
+
+### 4.3 Base row info (image_path, text)
+
+```python
+        row = {
+            "image_path": filename,
+            "text": f"This is a dummy text description {i}",
+        }
+```
+
+- For each image, start a row dictionary:
+
+  - `"image_path"` – just the filename (not full path).  
+    Your dataset code expects a column `image_path` that it will join with a base image directory.
+
+  - `"text"` – a simple dummy text description, different for each i:
+    - `"This is a dummy text description 0"`
+    - `"This is a dummy text description 1"`, etc.
+
+This simulates a caption or text associated with the image.
+
+---
+
+### 4.4 Multi-attribute mode: generate random labels for all attributes
+
+```python
+        if multi_attribute:
+            # Generate random labels for all attributes
+            for attr in ATTRIBUTE_NAMES:
+                num_classes = ATTRIBUTE_CLASSES[attr]
+                label_idx = random.randint(0, num_classes - 1)
+                row[f"{attr}_num"] = label_idx
+                row[attr] = ATTRIBUTE_LABELS[attr][label_idx]
+```
+
+If `multi_attribute=True`:
+
+- For each attribute in `ATTRIBUTE_NAMES`:
+  - `num_classes = ATTRIBUTE_CLASSES[attr]` – number of possible classes.
+  - `label_idx = random.randint(0, num_classes - 1)` – choose a random class index.
+
+- Save two fields in the row:
+
+  1. Numeric code:
+
+     ```python
+     row[f"{attr}_num"] = label_idx
+     ```
+
+     - Column name is e.g. `"sentiment_num"`.
+     - Value is the random index (e.g. 0, 1, or 2).
+
+  2. Text label:
+
+     ```python
+     row[attr] = ATTRIBUTE_LABELS[attr][label_idx]
+     ```
+
+     - Column name is just `"sentiment"`.
+     - Value is a human label like `"Positive"`.
+
+So each row has both numeric and text labels for all attributes.
+
+---
+
+### 4.5 Add some “text extracted” fields
+
+```python
+            # Add text-extracted fields
+            row["keywords"] = "Test Dummy Keywords"
+            row["monetary_mention"] = "50% OFF" if random.random() > 0.5 else "None"
+            row["call_to_action"] = random.choice(["Order Now", "Shop Today", "Learn More", "None"])
+            row["object_detected"] = random.choice(["Phone", "Food", "Clothing", "General"])
+```
+
+These columns mimic the extra fields your prediction code generates (from OCR text):
+
+- `"keywords"` – always `"Test Dummy Keywords"` here.
+- `"monetary_mention"` – either `"50% OFF"` (roughly half the time) or `"None"`.
+- `"call_to_action"` – randomly chosen from marketing phrases or `"None"`.
+- `"object_detected"` – randomly one of `"Phone"`, `"Food"`, `"Clothing"`, `"General"`.
+
+These are not used for training in the model, but they mimic the kind of data your full pipeline handles.
+
+---
+
+### 4.6 Legacy mode: single label per row
+
+```python
+        else:
+            # Legacy format
+            row["label_num"] = random.choice([1, 2])  # 1: Neutral, 2: Positive
+            row["label_text"] = "Positive" if row["label_num"] == 2 else "Neutral"
+```
+
+If `multi_attribute=False`:
+
+- Generate a single label:
+
+  - `row["label_num"]` – randomly 1 or 2.
+    - Comment suggests:
+      - `1`: Neutral
+      - `2`: Positive
+
+- `row["label_text"]`:
+  - `"Positive"` if label_num is 2.
+  - `"Neutral"` otherwise.
+
+This simulates the older data format where there was only one column `label_num` and one `label_text`.
+
+---
+
+### 4.7 Append row and save CSV
+
+```python
+        data.append(row)
+    
+    csv_path = os.path.join(base_dir, "data.csv")
+    df = pd.DataFrame(data)
+    df.to_csv(csv_path, index=False)
+    
+    return csv_path, image_dir
+```
+
+- After finishing all 5 images:
+
+  - `data` is a list of 5 row-dictionaries.
+
+- `df = pd.DataFrame(data)` – convert list of dicts to a pandas DataFrame.
+
+- `df.to_csv(csv_path, index=False)` – save it as `data.csv` in `base_dir`.
+
+So you end up with:
+
+- A folder `base_dir/images` containing `img_0.jpg` … `img_4.jpg`.
+- A CSV file `base_dir/data.csv` with 5 rows, each row describing an image and its labels.
+
+The function returns:
+
+- `csv_path` – path to `data.csv`.
+- `image_dir` – path to the `images` folder.
+
+These are exactly what your `CustomDataset` expects: a CSV path and an image directory.
+
+---
+
+## 5. `teardown_dummy_data` – clean up
+
+```python
+def teardown_dummy_data(base_dir):
+    if os.path.exists(base_dir):
+        shutil.rmtree(base_dir)
+```
+
+- Given the `base_dir` you used for `setup_dummy_data`, this function deletes it completely, including images and CSV.
+
+This is useful in tests where you want to:
+
+1. Create dummy data in a temp folder.
+2. Run some code on it.
+3. Remove the temp folder afterward.
+
+---
+
+## Visual summary
+
+Using this script, a typical test flow looks like:
+
+```text
+Call setup_dummy_data("tmp_test", multi_attribute=True)
+   │
+   ├─ Create "tmp_test" directory
+   ├─ Create "tmp_test/images/"
+   ├─ For i in 0..4:
+   │    ├─ Create white doc-like image with some black text → "img_i.jpg"
+   │    └─ Add a row in a list with:
+   │         - image_path: "img_i.jpg"
+   │         - text: "This is a dummy text description i"
+   │         - For each attribute: random *_num and label
+   │         - Some extra fields (keywords, monetary_mention, etc.)
+   │
+   └─ Save list as "tmp_test/data.csv"
+
+Return:
+  csv_path = "tmp_test/data.csv"
+  image_dir = "tmp_test/images"
+```
+
+Then you can do, for example:
+
+```python
+csv_path, image_dir = setup_dummy_data("tmp_test", multi_attribute=True)
+dataset = CustomDataset(csv_path, image_dir=image_dir)
+# ... run training/evaluation/prediction using this dummy dataset ...
+teardown_dummy_data("tmp_test")
+```
+
+This lets you test the entire pipeline end-to-end (reading CSV, loading images, model forward, etc.) without relying on real data or fragile paths.
